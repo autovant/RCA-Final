@@ -25,15 +25,13 @@ def event_loop():
 @pytest.fixture
 async def db_session():
     """Provide a test database session."""
-    from core.db.database import DatabaseManager
+    from core.db.database import db_manager
     
-    db_manager = DatabaseManager()
-    await db_manager.initialize()
+    if not db_manager.is_initialized:
+        await db_manager.initialize()
     
-    async with db_manager.get_session() as session:
+    async with db_manager.session() as session:
         yield session
-    
-    await db_manager.close()
 
 
 @pytest.fixture

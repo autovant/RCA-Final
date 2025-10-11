@@ -2,6 +2,9 @@
 
 import pytest
 import numpy as np
+
+pytest.importorskip("openai")
+
 from core.llm.embeddings import EmbeddingService
 
 

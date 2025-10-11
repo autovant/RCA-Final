@@ -27,7 +27,7 @@ class Worker:
     def __init__(self):
         self.running = True
         self.job_service = JobService()
-        self.job_processor = JobProcessor()
+        self.job_processor = JobProcessor(self.job_service)
         self.worker_id = f"worker_{asyncio.get_event_loop().time()}"
         
     async def start(self):
@@ -55,6 +55,7 @@ class Worker:
         """Stop the worker."""
         logger.info(f"Stopping RCA Engine Worker: {self.worker_id}")
         self.running = False
+        await self.job_processor.close()
         await close_db()
     
     def _handle_signal(self, signum, frame):
@@ -74,6 +75,11 @@ class Worker:
                 
                 if job:
                     logger.info(f"Processing job: {job.id}")
+                    await self.job_service.create_job_event(
+                        job.id,
+                        "worker-assigned",
+                        {"worker_id": self.worker_id},
+                    )
                     await self._process_job(job)
                 else:
                     # No jobs available, wait before polling again
@@ -87,15 +93,6 @@ class Worker:
     async def _process_job(self, job):
         """Process a single job."""
         try:
-            # Update job status to running
-            await self.job_service.update_job_status(job.id, "running")
-            
-            # Create processing event
-            await self.job_service.create_job_event(
-                job.id, "started", 
-                {"worker_id": self.worker_id}
-            )
-            
             # Process the job based on type
             if job.job_type == "rca_analysis":
                 result = await self.job_processor.process_rca_analysis(job)

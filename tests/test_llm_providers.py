@@ -1,6 +1,9 @@
 """Tests for LLM providers."""
 
 import pytest
+
+pytest.importorskip("openai")
+
 from core.llm.providers.base import LLMMessage, LLMProviderFactory
 
 

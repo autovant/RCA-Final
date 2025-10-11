@@ -4,6 +4,18 @@
 
 This repository contains the unified RCA Engine codebase that combines the best features from both development and production versions. This document outlines the current implementation status and what needs to be completed.
 
+### Frontend console quick start
+
+The `ui/` package now exposes a lightweight Next.js dashboard that can authenticate against the API, upload supporting files, create jobs, and stream worker progress over SSE. Configure the API base URL via `NEXT_PUBLIC_API_BASE_URL` (defaults to `http://localhost:8000`) and run:
+
+```
+cd ui
+npm install
+npm run dev
+```
+
+The dashboard consumes the refreshed job/file endpoints under `apps/api/routers` and mirrors the live event stream exposed by `/api/sse/jobs/{job_id}`.
+
 ---
 
 ## 🌐 Architecture Overview

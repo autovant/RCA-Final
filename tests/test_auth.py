@@ -2,6 +2,10 @@
 
 import pytest
 from datetime import timedelta
+from fastapi import HTTPException
+
+pytest.importorskip("sqlalchemy")
+
 from core.security.auth import AuthService
 
 
@@ -48,9 +52,8 @@ def test_decode_token():
 def test_decode_invalid_token():
     """Test decoding invalid token."""
     invalid_token = "invalid.token.here"
-    decoded = AuthService.decode_token(invalid_token)
-    
-    assert decoded is None
+    with pytest.raises(HTTPException):
+        AuthService.decode_token(invalid_token)
 
 
 def test_token_expiration():

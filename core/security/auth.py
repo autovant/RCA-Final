@@ -56,7 +56,10 @@ class AuthService:
         return pwd_context.hash(password)
     
     @staticmethod
-    def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+    def create_access_token(
+        data: Dict[str, Any],
+        expires_delta: Optional[timedelta] = None
+    ) -> str:
         """
         Create a JWT access token.
         
@@ -68,21 +71,25 @@ class AuthService:
             str: Encoded JWT token
         """
         to_encode = data.copy()
-        
-        if expires_delta:
-            expire = datetime.utcnow() + expires_delta
-        else:
-            expire = datetime.utcnow() + timedelta(
-                minutes=settings.security.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
-            )
-        
-        to_encode.update({
-            "exp": expire,
-            "iat": datetime.utcnow(),
-            "iss": settings.security.JWT_ISSUER,
-            "aud": settings.security.JWT_AUDIENCE,
-        })
-        
+        expire = datetime.utcnow() + (
+            expires_delta
+            if expires_delta
+            else timedelta(minutes=settings.security.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+
+        if "sub" not in to_encode:
+            raise ValueError("JWT payload must include a subject ('sub')")
+
+        to_encode.update(
+            {
+                "exp": expire,
+                "iat": datetime.utcnow(),
+                "iss": settings.security.JWT_ISSUER,
+                "aud": settings.security.JWT_AUDIENCE,
+                "type": "access",
+            }
+        )
+
         encoded_jwt = jwt.encode(
             to_encode,
             settings.security.JWT_SECRET_KEY,
@@ -107,14 +114,16 @@ class AuthService:
             days=settings.security.JWT_REFRESH_TOKEN_EXPIRE_DAYS
         )
         
-        to_encode.update({
-            "exp": expire,
-            "iat": datetime.utcnow(),
-            "iss": settings.security.JWT_ISSUER,
-            "aud": settings.security.JWT_AUDIENCE,
-            "type": "refresh"
-        })
-        
+        to_encode.update(
+            {
+                "exp": expire,
+                "iat": datetime.utcnow(),
+                "iss": settings.security.JWT_ISSUER,
+                "aud": settings.security.JWT_AUDIENCE,
+                "type": "refresh",
+            }
+        )
+
         encoded_jwt = jwt.encode(
             to_encode,
             settings.security.JWT_SECRET_KEY,
@@ -146,13 +155,13 @@ class AuthService:
                 issuer=settings.security.JWT_ISSUER
             )
             return payload
-        except JWTError as e:
-            logger.error(f"JWT decode error: {e}")
+        except JWTError as exc:
+            logger.error("JWT decode error: %s", exc)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
                 headers={"WWW-Authenticate": "Bearer"},
-            )
+            ) from exc
     
     @staticmethod
     async def authenticate_user(
@@ -194,7 +203,7 @@ class AuthService:
             # Update last login time
             user.last_login_at = datetime.utcnow()
             await db.commit()
-            
+
             logger.info(f"User authenticated successfully: {username}")
             return user
             
@@ -312,6 +321,26 @@ class AuthService:
             return result.scalar_one_or_none()
         except Exception as e:
             logger.error(f"Error getting user by username: {e}")
+            return None
+
+    @staticmethod
+    async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+        """
+        Get user by email address.
+
+        Args:
+            db: Database session
+            email: User email
+
+        Returns:
+            Optional[User]: User object if found, None otherwise
+        """
+        try:
+            stmt = select(User).where(User.email == email)
+            result = await db.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error getting user by email: {e}")
             return None
 
 

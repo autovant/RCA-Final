@@ -16,10 +16,11 @@ from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
 from core.config import settings
-from backend.db import session as db_session
+from core.db.database import init_db, close_db
 from core.logging import setup_logging
 from core.metrics import setup_metrics
 from core.security import setup_security
+from core.jobs.event_bus import job_event_bus
 from apps.api.routers import auth, jobs, files, health, sse
 from apps.api.middleware import SecurityMiddleware, RateLimitMiddleware, RequestLoggingMiddleware
 
@@ -34,7 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting RCA Engine API...")
     
     # Initialize database
-    await db_session.init_db()
+    await init_db()
     
     # Setup metrics
     setup_metrics()
@@ -46,7 +47,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     
     # Cleanup
     logger.info("Shutting down RCA Engine API...")
-    await db_session.close_db()
+    await close_db()
+    await job_event_bus.close()
 
 
 # Create FastAPI application
@@ -77,8 +79,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(SecurityMiddleware)
 
-# Add rate limiting (if Redis is available)
-if settings.redis.REDIS_ENABLED:
+# Add rate limiting when enabled
+if settings.security.RATE_LIMITING_ENABLED:
     app.add_middleware(RateLimitMiddleware)
 
 # Include routers
@@ -144,3 +146,4 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         log_level="info"
     )
+

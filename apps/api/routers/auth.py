@@ -3,7 +3,6 @@ Authentication router for RCA Engine API.
 Handles user authentication, registration, and token management.
 """
 
-from datetime import timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -12,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.security.auth import AuthService
-from core.db.database import DatabaseManager
+from core.db.database import get_db
 from core.db.models import User
 from core.logging import get_logger
 from core.metrics import MetricsCollector
@@ -52,7 +51,7 @@ class TokenRefresh(BaseModel):
 
 class UserResponse(BaseModel):
     """User response."""
-    id: int
+    id: str
     email: str
     username: str
     full_name: Optional[str]
@@ -61,14 +60,6 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-# Dependency to get database session
-async def get_db() -> AsyncSession:
-    """Get database session."""
-    db_manager = DatabaseManager()
-    async with db_manager.get_session() as session:
-        yield session
 
 
 # Dependency to get current user
@@ -97,15 +88,17 @@ async def get_current_user(
     
     # Decode token
     payload = AuthService.decode_token(token)
-    if payload is None:
+
+    token_type = payload.get("type")
+    if token_type != "access":
         raise credentials_exception
-    
-    username: str = payload.get("sub")
-    if username is None:
+
+    user_id: Optional[str] = payload.get("sub")
+    if not user_id:
         raise credentials_exception
     
     # Get user from database
-    user = await AuthService.get_user_by_username(db, username)
+    user = await AuthService.get_user_by_id(db, user_id)
     if user is None:
         raise credentials_exception
     
@@ -233,11 +226,14 @@ async def login(
             )
         
         # Create tokens
-        access_token = AuthService.create_access_token(
-            data={"sub": user.username, "email": user.email}
-        )
+        token_payload = {
+            "sub": str(user.id),
+            "username": user.username,
+            "email": user.email,
+        }
+        access_token = AuthService.create_access_token(data=token_payload)
         refresh_token = AuthService.create_refresh_token(
-            data={"sub": user.username}
+            data={"sub": str(user.id), "username": user.username}
         )
         
         logger.info(f"User logged in: {user.username}")
@@ -279,21 +275,21 @@ async def refresh_token(
     try:
         # Decode refresh token
         payload = AuthService.decode_token(token_data.refresh_token)
-        if payload is None:
+        if payload.get("type") != "refresh":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
             )
         
-        username: str = payload.get("sub")
-        if username is None:
+        user_id: Optional[str] = payload.get("sub")
+        if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
             )
-        
+
         # Get user
-        user = await AuthService.get_user_by_username(db, username)
+        user = await AuthService.get_user_by_id(db, user_id)
         if user is None or not user.is_active:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -301,11 +297,14 @@ async def refresh_token(
             )
         
         # Create new tokens
-        access_token = AuthService.create_access_token(
-            data={"sub": user.username, "email": user.email}
-        )
+        token_payload = {
+            "sub": str(user.id),
+            "username": user.username,
+            "email": user.email,
+        }
+        access_token = AuthService.create_access_token(data=token_payload)
         refresh_token = AuthService.create_refresh_token(
-            data={"sub": user.username}
+            data={"sub": str(user.id), "username": user.username}
         )
         
         logger.info(f"Token refreshed for user: {user.username}")

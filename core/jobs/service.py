@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from core.db.models import Job, JobEvent, File, Document
 from core.db.database import get_db_session
+from core.jobs.event_bus import job_event_bus
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,25 @@ class JobService:
     
     def __init__(self):
         self._session_factory = get_db_session()
+        self._event_bus = job_event_bus
+
+    @staticmethod
+    def _register_session_event(
+        session: AsyncSession, job_id: str, event: JobEvent
+    ) -> None:
+        """Attach pending events to the session for post-commit publishing."""
+        pending = session.info.setdefault("_job_pending_events", [])
+        pending.append((job_id, event))
+
+    async def _publish_session_events(self, session: AsyncSession) -> None:
+        """Publish any events queued on the session."""
+        pending = session.info.pop("_job_pending_events", [])
+        for job_id, event in pending:
+            await self._event_bus.publish(job_id, event.to_dict())
+
+    async def publish_session_events(self, session: AsyncSession) -> None:
+        """Public wrapper used by external callers to flush queued events."""
+        await self._publish_session_events(session)
     
     async def create_job(
         self, 
@@ -57,6 +77,8 @@ class JobService:
             )
             
             await session.commit()
+            await self._publish_session_events(session)
+            await session.refresh(job)
             
             logger.info(f"Created job: {job.id} for user: {user_id}")
             return job
@@ -65,7 +87,12 @@ class JobService:
         """Get job by ID."""
         async with self._session_factory() as session:
             result = await session.execute(
-                select(Job).where(Job.id == job_id)
+                select(Job)
+                .options(
+                    selectinload(Job.files),
+                    selectinload(Job.documents),
+                )
+                .where(Job.id == job_id)
             )
             return result.scalar_one_or_none()
     
@@ -95,153 +122,160 @@ class JobService:
     async def get_next_pending_job(self) -> Optional[Job]:
         """Get next pending job for processing (with proper locking)."""
         async with self._session_factory() as session:
-            # Use explicit transaction for locking
+            job: Optional[Job] = None
+
             async with session.begin():
                 result = await session.execute(
                     select(Job)
+                    .options(
+                        selectinload(Job.files),
+                        selectinload(Job.documents),
+                    )
                     .where(
                         Job.status == "pending",
-                        Job.retry_count < Job.max_retries
+                        Job.retry_count < Job.max_retries,
                     )
                     .order_by(Job.priority.desc(), Job.created_at.asc())
                     .limit(1)
                     .with_for_update(skip_locked=True)
                 )
-                
+
                 job = result.scalar_one_or_none()
-                
+
                 if job:
-                    # Update status within transaction
                     job.status = "running"
                     job.started_at = datetime.utcnow()
                     job.updated_at = datetime.utcnow()
-                    
-                    # Create started event
+
                     await self.create_job_event(
                         job.id,
                         "started",
                         {"worker_id": "worker_instance"},
-                        session=session
+                        session=session,
                     )
-                    
-                    await session.commit()
-                    
-                    logger.info(f"Acquired job for processing: {job.id}")
-                    return job
-                
-                return None
+
+            if job:
+                await self._publish_session_events(session)
+                await session.refresh(job)
+                logger.info("Acquired job for processing: %s", job.id)
+
+            return job
     
     async def update_job_status(self, job_id: str, status: str, data: Optional[Dict] = None):
         """Update job status."""
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Job).where(Job.id == job_id)
-            )
-            job = result.scalar_one_or_none()
-            
-            if job:
+            async with session.begin():
+                result = await session.execute(
+                    select(Job).where(Job.id == job_id)
+                )
+                job = result.scalar_one_or_none()
+
+                if not job:
+                    return
+
                 job.status = status
                 job.updated_at = datetime.utcnow()
-                
+
                 if status == "running" and not job.started_at:
                     job.started_at = datetime.utcnow()
                 elif status in ["completed", "failed", "cancelled"] and not job.completed_at:
                     job.completed_at = datetime.utcnow()
-                
-                await session.commit()
-                
-                # Create status event
+
                 event_data = {"status": status}
                 if data:
                     event_data.update(data)
-                
+
                 await self.create_job_event(
                     job_id,
                     status,
                     event_data,
                     session=session
                 )
-                
-                logger.info(f"Updated job {job_id} status to {status}")
+
+            await self._publish_session_events(session)
+            logger.info("Updated job %s status to %s", job_id, status)
     
     async def complete_job(self, job_id: str, result_data: Dict[str, Any]):
         """Mark job as completed."""
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Job).where(Job.id == job_id)
-            )
-            job = result.scalar_one_or_none()
-            
-            if job:
+            async with session.begin():
+                result = await session.execute(
+                    select(Job).where(Job.id == job_id)
+                )
+                job = result.scalar_one_or_none()
+
+                if not job:
+                    return
+
                 job.status = "completed"
                 job.result_data = result_data
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
-                
-                await session.commit()
-                
-                # Create completion event
+
                 await self.create_job_event(
                     job_id,
                     "completed",
                     {"result": result_data},
                     session=session
                 )
-                
-                logger.info(f"Completed job: {job_id}")
+
+            await self._publish_session_events(session)
+            logger.info("Completed job: %s", job_id)
     
     async def fail_job(self, job_id: str, error_message: str):
         """Mark job as failed."""
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Job).where(Job.id == job_id)
-            )
-            job = result.scalar_one_or_none()
-            
-            if job:
+            async with session.begin():
+                result = await session.execute(
+                    select(Job).where(Job.id == job_id)
+                )
+                job = result.scalar_one_or_none()
+
+                if not job:
+                    return
+
                 job.status = "failed"
                 job.error_message = error_message
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
                 job.retry_count += 1
-                
-                await session.commit()
-                
-                # Create failure event
+
                 await self.create_job_event(
                     job_id,
                     "failed",
                     {"error": error_message},
                     session=session
                 )
-                
-                logger.error(f"Failed job: {job_id}, error: {error_message}")
-    
+
+            await self._publish_session_events(session)
+            logger.error("Failed job: %s, error: %s", job_id, error_message)
+
     async def cancel_job(self, job_id: str, reason: str = "User cancelled"):
         """Cancel a job."""
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Job).where(Job.id == job_id)
-            )
-            job = result.scalar_one_or_none()
-            
-            if job and job.status not in ["completed", "failed", "cancelled"]:
+            async with session.begin():
+                result = await session.execute(
+                    select(Job).where(Job.id == job_id)
+                )
+                job = result.scalar_one_or_none()
+
+                if not job or job.status in ["completed", "failed", "cancelled"]:
+                    return
+
                 job.status = "cancelled"
                 job.error_message = reason
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
-                
-                await session.commit()
-                
-                # Create cancellation event
+
                 await self.create_job_event(
                     job_id,
                     "cancelled",
                     {"reason": reason},
                     session=session
                 )
-                
-                logger.info(f"Cancelled job: {job_id}, reason: {reason}")
+
+            await self._publish_session_events(session)
+            logger.info("Cancelled job: %s, reason: %s", job_id, reason)
     
     async def create_job_event(
         self,
@@ -250,28 +284,36 @@ class JobService:
         data: Optional[Dict] = None,
         *,
         session: Optional[AsyncSession] = None,
-    ) -> None:
+    ) -> JobEvent:
         """
         Persist a job event, optionally reusing an existing session.
         
-        When no session is provided we open a new transactional context.
+        When a session is supplied the event is queued for publication and
+        emitted once the caller commits.
         """
 
-        async def _persist(target_session: AsyncSession) -> None:
+        async def _persist(target_session: AsyncSession) -> JobEvent:
             event = JobEvent(
                 job_id=job_id,
                 event_type=event_type,
-                data=data or {}
+                data=data or {},
             )
             target_session.add(event)
+            await target_session.flush()
+            await target_session.refresh(event)
             logger.debug("Created event %s for job %s", event_type, job_id)
+            return event
 
         if session is not None:
-            await _persist(session)
-            return
+            event = await _persist(session)
+            self._register_session_event(session, job_id, event)
+            return event
 
         async with self._session_factory() as session_ctx:
-            await _persist(session_ctx)
+            async with session_ctx.begin():
+                event = await _persist(session_ctx)
+            await self._event_bus.publish(job_id, event.to_dict())
+            return event
     
     async def get_job_events(
         self, 
@@ -311,7 +353,7 @@ class JobService:
     
     async def get_job_statistics(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """Get job statistics."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             query = select(Job)
             
             if user_id:
@@ -351,7 +393,7 @@ class JobService:
         """Clean up old completed jobs."""
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         
-        async with self.db() as session:
+        async with self._session_factory() as session:
             # Delete old completed jobs
             result = await session.execute(
                 select(Job).where(
