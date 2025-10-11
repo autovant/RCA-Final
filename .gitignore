@@ -1,0 +1,96 @@
+# .gitignore for RCA Engine
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads and generated files
+uploads/
+reports/
+watch-folder/
+*.tmp
+*.temp
+
+# Security
+*.pem
+*.key
+*.crt
+secrets/
+
+# Docker
+.dockerignore
+
+# Node.js (UI)
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# Monitoring
+prometheus_data/
+grafana_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Local development
+local_settings.py
+local_config.py

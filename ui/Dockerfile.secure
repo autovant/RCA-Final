@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1
+# RCA Engine UI - Secure Production Dockerfile
+# Multi-stage build with security hardening
+
+ARG NODE_VERSION=18-alpine
+
+# Stage 1: Build application
+FROM node:${NODE_VERSION} as builder
+
+# Install security updates
+RUN apk update && \
+    apk upgrade && \
+    apk add --no-cache \
+    curl \
+    && \
+    rm -rf /var/cache/apk/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies with security audit
+RUN npm ci --only=production --no-audit --no-fund && \
+    npm cache clean --force
+
+# Copy source code
+COPY . .
+
+# Build application
+RUN npm run build
+
+# Stage 2: Production image
+FROM node:${NODE_VERSION} as runtime
+
+# Security: Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nextjs -u 1001
+
+# Security: Install security updates
+RUN apk update && \
+    apk upgrade && \
+    apk add --no-cache \
+    curl \
+    dumb-init \
+    && \
+    rm -rf /var/cache/apk/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy built application
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+
+# Create necessary directories
+RUN mkdir -p /app/.next/cache && \
+    chown -R nextjs:nodejs /app && \
+    chmod 755 /app && \
+    chmod 750 /app/.next/cache
+
+# Environment variables
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME="0.0.0.0"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Switch to non-root user
+USER nextjs
+
+# Expose port
+EXPOSE 3000
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start application
+CMD ["node", "server.js"]
+
+# Labels for metadata
+LABEL maintainer="RCA Engine Team" \
+    version="1.0.0" \
+    description="RCA Engine UI - Next.js Frontend" \
+    security.scan="true" \
+    security.user="non-root" \
+    security.readonly="true"
