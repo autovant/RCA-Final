@@ -22,7 +22,7 @@ class JobService:
     """Service for managing RCA analysis jobs."""
     
     def __init__(self):
-        self.db = get_db_session()
+        self._session_factory = get_db_session()
     
     async def create_job(
         self, 
@@ -34,7 +34,7 @@ class JobService:
         priority: int = 0
     ) -> Job:
         """Create a new analysis job."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             job = Job(
                 job_type=job_type,
                 user_id=user_id,
@@ -50,8 +50,10 @@ class JobService:
             
             # Create initial event
             await self.create_job_event(
-                session, job.id, "created", 
-                {"input_manifest": input_manifest}
+                job.id,
+                "created",
+                {"input_manifest": input_manifest},
+                session=session
             )
             
             await session.commit()
@@ -61,35 +63,38 @@ class JobService:
     
     async def get_job(self, job_id: str) -> Optional[Job]:
         """Get job by ID."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             result = await session.execute(
                 select(Job).where(Job.id == job_id)
             )
             return result.scalar_one_or_none()
     
     async def get_user_jobs(
-        self, 
-        user_id: str, 
+        self,
+        user_id: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[Job]:
-        """Get jobs for a specific user."""
-        async with self.db() as session:
-            query = select(Job).where(Job.user_id == user_id)
-            
+        """Get jobs for a specific user or all jobs when user_id is omitted."""
+        async with self._session_factory() as session:
+            query = select(Job)
+
+            if user_id:
+                query = query.where(Job.user_id == user_id)
+
             if status:
                 query = query.where(Job.status == status)
-            
+
             query = query.order_by(Job.created_at.desc())
             query = query.limit(limit).offset(offset)
-            
+
             result = await session.execute(query)
             return result.scalars().all()
     
     async def get_next_pending_job(self) -> Optional[Job]:
         """Get next pending job for processing (with proper locking)."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             # Use explicit transaction for locking
             async with session.begin():
                 result = await session.execute(
@@ -113,8 +118,10 @@ class JobService:
                     
                     # Create started event
                     await self.create_job_event(
-                        session, job.id, "started", 
-                        {"worker_id": "worker_instance"}
+                        job.id,
+                        "started",
+                        {"worker_id": "worker_instance"},
+                        session=session
                     )
                     
                     await session.commit()
@@ -126,7 +133,7 @@ class JobService:
     
     async def update_job_status(self, job_id: str, status: str, data: Optional[Dict] = None):
         """Update job status."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             result = await session.execute(
                 select(Job).where(Job.id == job_id)
             )
@@ -148,13 +155,18 @@ class JobService:
                 if data:
                     event_data.update(data)
                 
-                await self.create_job_event(session, job_id, status, event_data)
+                await self.create_job_event(
+                    job_id,
+                    status,
+                    event_data,
+                    session=session
+                )
                 
                 logger.info(f"Updated job {job_id} status to {status}")
     
     async def complete_job(self, job_id: str, result_data: Dict[str, Any]):
         """Mark job as completed."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             result = await session.execute(
                 select(Job).where(Job.id == job_id)
             )
@@ -170,15 +182,17 @@ class JobService:
                 
                 # Create completion event
                 await self.create_job_event(
-                    session, job_id, "completed", 
-                    {"result": result_data}
+                    job_id,
+                    "completed",
+                    {"result": result_data},
+                    session=session
                 )
                 
                 logger.info(f"Completed job: {job_id}")
     
     async def fail_job(self, job_id: str, error_message: str):
         """Mark job as failed."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             result = await session.execute(
                 select(Job).where(Job.id == job_id)
             )
@@ -195,15 +209,17 @@ class JobService:
                 
                 # Create failure event
                 await self.create_job_event(
-                    session, job_id, "failed", 
-                    {"error": error_message}
+                    job_id,
+                    "failed",
+                    {"error": error_message},
+                    session=session
                 )
                 
                 logger.error(f"Failed job: {job_id}, error: {error_message}")
     
     async def cancel_job(self, job_id: str, reason: str = "User cancelled"):
         """Cancel a job."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             result = await session.execute(
                 select(Job).where(Job.id == job_id)
             )
@@ -219,29 +235,43 @@ class JobService:
                 
                 # Create cancellation event
                 await self.create_job_event(
-                    session, job_id, "cancelled", 
-                    {"reason": reason}
+                    job_id,
+                    "cancelled",
+                    {"reason": reason},
+                    session=session
                 )
                 
                 logger.info(f"Cancelled job: {job_id}, reason: {reason}")
     
     async def create_job_event(
-        self, 
-        session: AsyncSession, 
-        job_id: str, 
-        event_type: str, 
-        data: Optional[Dict] = None
-    ):
-        """Create a job event."""
-        event = JobEvent(
-            job_id=job_id,
-            event_type=event_type,
-            data=data or {}
-        )
+        self,
+        job_id: str,
+        event_type: str,
+        data: Optional[Dict] = None,
+        *,
+        session: Optional[AsyncSession] = None,
+    ) -> None:
+        """
+        Persist a job event, optionally reusing an existing session.
         
-        session.add(event)
-        
-        logger.debug(f"Created event {event_type} for job {job_id}")
+        When no session is provided we open a new transactional context.
+        """
+
+        async def _persist(target_session: AsyncSession) -> None:
+            event = JobEvent(
+                job_id=job_id,
+                event_type=event_type,
+                data=data or {}
+            )
+            target_session.add(event)
+            logger.debug("Created event %s for job %s", event_type, job_id)
+
+        if session is not None:
+            await _persist(session)
+            return
+
+        async with self._session_factory() as session_ctx:
+            await _persist(session_ctx)
     
     async def get_job_events(
         self, 
@@ -250,7 +280,7 @@ class JobService:
         event_type: Optional[str] = None
     ) -> List[JobEvent]:
         """Get events for a job."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             query = select(JobEvent).where(JobEvent.job_id == job_id)
             
             if event_type:
@@ -268,7 +298,7 @@ class JobService:
         since: Optional[datetime]
     ) -> List[JobEvent]:
         """Get events since a specific timestamp."""
-        async with self.db() as session:
+        async with self._session_factory() as session:
             query = select(JobEvent).where(JobEvent.job_id == job_id)
             
             if since:

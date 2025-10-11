@@ -6,7 +6,6 @@ Main FastAPI application entry point for the unified RCA engine.
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -18,12 +17,11 @@ from prometheus_client import make_asgi_app
 
 from core.config import settings
 from backend.db import session as db_session
-from core.db.models import Base
 from core.logging import setup_logging
 from core.metrics import setup_metrics
 from core.security import setup_security
 from apps.api.routers import auth, jobs, files, health, sse
-from apps.api.middleware import SecurityMiddleware, RateLimitMiddleware
+from apps.api.middleware import SecurityMiddleware, RateLimitMiddleware, RequestLoggingMiddleware
 
 # Setup logging
 setup_logging()
@@ -63,22 +61,24 @@ app = FastAPI(
 )
 
 # Setup CORS
+security_settings = settings.security
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.SECURITY.CORS_ALLOW_ORIGINS,
-    allow_credentials=settings.SECURITY.CORS_ALLOW_CREDENTIALS,
-    allow_methods=settings.SECURITY.CORS_ALLOW_METHODS,
-    allow_headers=settings.SECURITY.CORS_ALLOW_HEADERS,
+    allow_origins=security_settings.CORS_ALLOW_ORIGINS,
+    allow_credentials=security_settings.CORS_ALLOW_CREDENTIALS,
+    allow_methods=security_settings.CORS_ALLOW_METHODS,
+    allow_headers=security_settings.CORS_ALLOW_HEADERS,
 )
 
 # Add compression
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Add security middleware
+# Add request logging and security middleware
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(SecurityMiddleware)
 
 # Add rate limiting (if Redis is available)
-if settings.REDIS_ENABLED:
+if settings.redis.REDIS_ENABLED:
     app.add_middleware(RateLimitMiddleware)
 
 # Include routers
@@ -111,8 +111,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def root():
     """Root endpoint."""
     return {
-        "message": "RCA Engine API",
-        "version": "1.0.0",
+        "message": settings.APP_NAME,
+        "version": settings.APP_VERSION,
         "status": "operational",
         "docs": "/api/docs" if settings.DEBUG else None
     }
@@ -124,10 +124,10 @@ async def status():
     return {
         "status": "healthy",
         "timestamp": asyncio.get_event_loop().time(),
-        "version": "1.0.0",
+        "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
         "features": {
-            "redis": settings.REDIS_ENABLED,
+            "redis": settings.redis.REDIS_ENABLED,
             "metrics": True,
             "streaming": True
         }

@@ -19,6 +19,34 @@ import time
 import logging
 
 logger = logging.getLogger(__name__)
+_metrics_configured = False
+
+
+def setup_metrics() -> None:
+    """
+    Idempotent initialiser used by the API and worker entrypoints.
+
+    The heavy lifting (registry / metric creation) happens at import time; this
+    hook simply records the fact that metrics were requested and emits a single
+    log entry so operators know the component was initialised.
+    """
+    global _metrics_configured
+
+    if _metrics_configured:
+        logger.debug("Metrics already configured; skipping re-initialisation")
+        return
+
+    if not settings.METRICS_ENABLED:
+        logger.info("Prometheus metrics disabled via configuration")
+        _metrics_configured = True
+        return
+
+    logger.info(
+        "Prometheus metrics enabled for %s v%s",
+        settings.APP_NAME,
+        settings.APP_VERSION,
+    )
+    _metrics_configured = True
 
 # Create custom registry
 registry = CollectorRegistry()
@@ -439,6 +467,7 @@ class timer:
 
 # Export commonly used items
 __all__ = [
+    'setup_metrics',
     'MetricsCollector',
     'get_metrics',
     'timer',

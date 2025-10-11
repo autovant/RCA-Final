@@ -3,16 +3,15 @@ Database connection management for RCA Engine.
 Provides async database connection pool and session management.
 """
 
-import asyncio
-from typing import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Callable
+
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
     AsyncSession,
     async_sessionmaker,
     AsyncEngine
 )
-from sqlalchemy.pool import NullPool
 from sqlalchemy import event, text
 from core.config import settings
 from core.db.models import Base
@@ -27,7 +26,7 @@ class DatabaseManager:
     def __init__(self):
         """Initialize database manager."""
         self._engine: AsyncEngine | None = None
-        self._session_factory: async_sessionmaker | None = None
+        self._session_factory: async_sessionmaker[AsyncSession] | None = None
         self._initialized = False
     
     def _create_engine(self) -> AsyncEngine:
@@ -221,6 +220,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+def get_db_session() -> Callable[[], AsyncGenerator[AsyncSession, None]]:
+    """
+    Provide a callable compatible with legacy call-sites that expect to obtain an
+    async context manager via ``async with get_db_session()():``.
+    """
+    return db_manager.session
+
+
 async def init_db():
     """Initialize database and create tables."""
     await db_manager.initialize()
@@ -237,6 +244,7 @@ __all__ = [
     "DatabaseManager",
     "db_manager",
     "get_db",
+    "get_db_session",
     "init_db",
     "close_db",
 ]
