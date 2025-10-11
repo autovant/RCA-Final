@@ -5,19 +5,21 @@ Centralized configuration management with environment-based settings.
 
 import os
 from typing import List, Optional
-from pydantic import BaseSettings, Field, validator
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings
 from pathlib import Path
 
 
 class SecuritySettings(BaseSettings):
     """Security-related settings."""
-    
+
     # JWT Configuration
     JWT_SECRET_KEY: str = Field(..., env="JWT_SECRET_KEY")
     JWT_ALGORITHM: str = Field("HS256", env="JWT_ALGORITHM")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(30, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = Field(7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
     JWT_ISSUER: str = Field("rca-engine", env="JWT_ISSUER")
+    JWT_AUDIENCE: str = Field("rca-users", env="JWT_AUDIENCE")
     JWT_AUDIENCE: str = Field("rca-users", env="JWT_AUDIENCE")
     
     # CORS Configuration
@@ -42,8 +44,9 @@ class SecuritySettings(BaseSettings):
     # Content Security Policy
     CSP_ENABLED: bool = Field(True, env="CSP_ENABLED")
     CSP_REPORT_ONLY: bool = Field(False, env="CSP_REPORT_ONLY")
-    
-    @validator("JWT_SECRET_KEY")
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
     def validate_jwt_secret(cls, v):
         if len(v) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters")
@@ -99,10 +102,22 @@ class LLMSettings(BaseSettings):
     DEFAULT_PROVIDER: str = Field("ollama", env="DEFAULT_PROVIDER")
     
     # Ollama Configuration
-    OLLAMA_HOST: str = Field("http://ollama:11434", env="OLLAMA_HOST")
+    OLLAMA_BASE_URL: str = Field("http://ollama:11434", env="OLLAMA_BASE_URL")
+    OLLAMA_HOST: str = Field("http://ollama:11434", env="OLLAMA_HOST")  # Backward compatibility
     OLLAMA_MODEL: str = Field("llama2", env="OLLAMA_MODEL")
     OLLAMA_TIMEOUT: int = Field(300, env="OLLAMA_TIMEOUT")
     OLLAMA_MAX_TOKENS: int = Field(4096, env="OLLAMA_MAX_TOKENS")
+    
+    # OpenAI Configuration
+    OPENAI_API_KEY: Optional[str] = Field(None, env="OPENAI_API_KEY")
+    OPENAI_ORG_ID: Optional[str] = Field(None, env="OPENAI_ORG_ID")
+    OPENAI_MODEL: str = Field("gpt-4", env="OPENAI_MODEL")
+    OPENAI_MAX_TOKENS: int = Field(4096, env="OPENAI_MAX_TOKENS")
+    
+    # AWS Bedrock Configuration
+    BEDROCK_REGION: str = Field("us-east-1", env="BEDROCK_REGION")
+    BEDROCK_MODEL: str = Field("anthropic.claude-v2", env="BEDROCK_MODEL")
+    BEDROCK_MAX_TOKENS: int = Field(4096, env="BEDROCK_MAX_TOKENS")
     
     # Embedding Configuration
     EMBEDDING_PROVIDER: str = Field("ollama", env="EMBEDDING_PROVIDER")
@@ -150,46 +165,48 @@ class WorkerSettings(BaseSettings):
 
 class Settings(BaseSettings):
     """Main application settings."""
-    
+
     # Environment
     ENVIRONMENT: str = Field("development", env="ENVIRONMENT")
     DEBUG: bool = Field(False, env="DEBUG")
-    
+
     # Application
     APP_NAME: str = "RCA Engine"
     APP_VERSION: str = "1.0.0"
     API_V1_PREFIX: str = "/api/v1"
-    
-    # Security
-    security: SecuritySettings = SecuritySettings()
-    
-    # Database
-    database: DatabaseSettings = DatabaseSettings()
-    
-    # Redis
-    redis: RedisSettings = RedisSettings()
-    
-    # LLM
-    llm: LLMSettings = LLMSettings()
-    
-    # Files
-    files: FileSettings = FileSettings()
-    
-    # Worker
-    worker: WorkerSettings = WorkerSettings()
-    
+
     # Logging
     LOG_LEVEL: str = Field("INFO", env="LOG_LEVEL")
     LOG_FORMAT: str = Field("json", env="LOG_FORMAT")
-    
+
     # Metrics
     METRICS_ENABLED: bool = Field(True, env="METRICS_ENABLED")
     METRICS_PORT: int = Field(8001, env="METRICS_PORT")
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+
+    # Security
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
+
+    # Database
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+
+    # Redis
+    redis: RedisSettings = Field(default_factory=RedisSettings)
+
+    # LLM
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+
+    # Files
+    files: FileSettings = Field(default_factory=FileSettings)
+
+    # Worker
+    worker: WorkerSettings = Field(default_factory=WorkerSettings)
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": True,
+        "extra": "ignore"
+    }
 
 
 # Global settings instance
