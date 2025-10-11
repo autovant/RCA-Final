@@ -6,9 +6,10 @@ embeddings, and orchestrating LLM-backed analysis.
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -23,6 +24,7 @@ from core.jobs.service import JobService
 from core.llm.embeddings import EmbeddingService
 from core.llm.providers import LLMMessage, LLMProviderFactory
 from core.logging import get_logger
+from core.privacy import PiiRedactor, RedactionResult
 
 logger = get_logger(__name__)
 
@@ -58,6 +60,8 @@ class FileSummary:
     sample_tail: List[str]
     top_keywords: List[str]
     chunk_count: int = 0
+    redaction_applied: bool = False
+    redaction_counts: Dict[str, int] = field(default_factory=dict)
 
 
 class JobProcessor:
@@ -68,6 +72,7 @@ class JobProcessor:
         self._session_factory = get_db_session()
         self._embedding_service: Optional[EmbeddingService] = None
         self._embedding_lock = asyncio.Lock()
+        self._pii_redactor = PiiRedactor()
 
     async def close(self) -> None:
         """Release underlying resources."""
@@ -129,6 +134,14 @@ class JobProcessor:
             "chunks": total_chunks,
         }
 
+        outputs = self._render_outputs(
+            job,
+            aggregate_metrics,
+            file_summaries,
+            llm_output,
+            mode="rca_analysis",
+        )
+
         return {
             "job_id": str(job.id),
             "analysis_type": "rca_analysis",
@@ -136,6 +149,7 @@ class JobProcessor:
             "metrics": aggregate_metrics,
             "files": [asdict(summary) for summary in file_summaries],
             "llm": llm_output,
+            "outputs": outputs,
         }
 
     async def process_log_analysis(self, job: Job) -> Dict[str, Any]:
@@ -197,6 +211,14 @@ class JobProcessor:
             if summary.error_count or summary.critical_count
         ]
 
+        outputs = self._render_outputs(
+            job,
+            aggregate_metrics,
+            file_summaries,
+            llm_output,
+            mode="log_analysis",
+        )
+
         return {
             "job_id": str(job.id),
             "analysis_type": "log_analysis",
@@ -205,6 +227,7 @@ class JobProcessor:
             "files": [asdict(summary) for summary in file_summaries],
             "suspected_error_logs": suspected_error_logs,
             "llm": llm_output,
+            "outputs": outputs,
         }
 
     async def process_embedding_generation(self, job: Job) -> Dict[str, Any]:
@@ -256,6 +279,202 @@ class JobProcessor:
             "document_count": len(documents),
         }
 
+    def _render_outputs(
+        self,
+        job: Job,
+        metrics: Dict[str, Any],
+        summaries: Sequence[FileSummary],
+        llm_output: Dict[str, Any],
+        mode: str,
+    ) -> Dict[str, Any]:
+        severity = self._determine_severity(metrics)
+        categories = self._derive_categories(metrics, mode)
+        tags = self._derive_tags(summaries)
+        recommended_actions = self._extract_actions(llm_output.get("summary", "")) or [
+            "Review the generated summary and log excerpts for next steps."
+        ]
+        markdown = self._build_markdown(
+            job, mode, severity, metrics, summaries, recommended_actions, tags, llm_output
+        )
+        html_output = self._build_html(
+            job, mode, severity, metrics, summaries, recommended_actions, tags, llm_output
+        )
+
+        structured_json = {
+            "job_id": str(job.id),
+            "analysis_type": mode,
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "severity": severity,
+            "categories": categories,
+            "tags": tags,
+            "metrics": metrics,
+            "files": [asdict(summary) for summary in summaries],
+            "summary": llm_output.get("summary"),
+            "llm": llm_output,
+            "recommended_actions": recommended_actions,
+            "ticketing": job.ticketing or {},
+        }
+
+        return {"markdown": markdown, "html": html_output, "json": structured_json}
+
+    @staticmethod
+    def _determine_severity(metrics: Dict[str, Any]) -> str:
+        if metrics.get("critical", 0):
+            return "critical"
+        if metrics.get("errors", 0):
+            return "high"
+        if metrics.get("warnings", 0):
+            return "moderate"
+        return "low"
+
+    @staticmethod
+    def _derive_categories(metrics: Dict[str, Any], mode: str) -> List[str]:
+        categories = {mode}
+        if metrics.get("critical"):
+            categories.add("priority-incident")
+        if metrics.get("errors"):
+            categories.add("error-detected")
+        if metrics.get("warnings"):
+            categories.add("warning-detected")
+        categories.add("rca")
+        return sorted(categories)
+
+    @staticmethod
+    def _derive_tags(summaries: Sequence[FileSummary]) -> List[str]:
+        keywords: set[str] = set()
+        for summary in summaries:
+            keywords.update(summary.top_keywords[:3])
+        return sorted(list(keywords))[:10]
+
+    @staticmethod
+    def _extract_actions(summary_text: str) -> List[str]:
+        actions: List[str] = []
+        for line in summary_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("-", "*")):
+                actions.append(stripped.lstrip("-* ").strip())
+        return [action for action in actions if action]
+
+    def _build_markdown(
+        self,
+        job: Job,
+        mode: str,
+        severity: str,
+        metrics: Dict[str, Any],
+        summaries: Sequence[FileSummary],
+        recommended_actions: Sequence[str],
+        tags: Sequence[str],
+        llm_output: Dict[str, Any],
+    ) -> str:
+        lines: List[str] = [
+            f"# RCA Summary – Job {job.id}",
+            "",
+            f"- **Mode:** {mode}",
+            f"- **Severity:** {severity.title()}",
+            f"- **Files Analysed:** {metrics.get('files', 0)}",
+            f"- **Errors:** {metrics.get('errors', 0)}",
+            f"- **Warnings:** {metrics.get('warnings', 0)}",
+            f"- **Critical Events:** {metrics.get('critical', 0)}",
+        ]
+        if tags:
+            lines.append(f"- **Tags:** {', '.join(tags)}")
+
+        lines.extend(
+            [
+                "",
+                "## LLM Summary",
+                llm_output.get("summary", "No automated summary available."),
+                "",
+                "## Recommended Actions",
+            ]
+        )
+        for action in recommended_actions:
+            lines.append(f"- {action}")
+
+        lines.append("")
+        lines.append("## File Highlights")
+        for summary in summaries:
+            lines.append(f"### {summary.filename}")
+            lines.append(
+                f"- Lines: {summary.line_count}, Errors: {summary.error_count}, "
+                f"Warnings: {summary.warning_count}, Critical: {summary.critical_count}"
+            )
+            if summary.top_keywords:
+                lines.append(f"- Top Keywords: {', '.join(summary.top_keywords[:5])}")
+            if summary.sample_head:
+                lines.append("- Sample Head:")
+                for line in summary.sample_head:
+                    lines.append(f"  - `{line}`")
+            if summary.sample_tail:
+                lines.append("- Sample Tail:")
+                for line in summary.sample_tail:
+                    lines.append(f"  - `{line}`")
+            lines.append("")
+
+        return "\n".join(lines).strip()
+
+    def _build_html(
+        self,
+        job: Job,
+        mode: str,
+        severity: str,
+        metrics: Dict[str, Any],
+        summaries: Sequence[FileSummary],
+        recommended_actions: Sequence[str],
+        tags: Sequence[str],
+        llm_output: Dict[str, Any],
+    ) -> str:
+        rows = []
+        for summary in summaries:
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(summary.filename)}</td>"
+                f"<td>{summary.line_count}</td>"
+                f"<td>{summary.error_count}</td>"
+                f"<td>{summary.warning_count}</td>"
+                f"<td>{summary.critical_count}</td>"
+                "</tr>"
+            )
+
+        actions_html = "".join(
+            f"<li>{html.escape(action)}</li>" for action in recommended_actions
+        )
+        tags_html = ", ".join(html.escape(tag) for tag in tags)
+
+        summary_html = html.escape(
+            llm_output.get("summary", "No automated summary available.")
+        )
+
+        return (
+            "<article>"
+            f"<h1>RCA Summary – Job {html.escape(str(job.id))}</h1>"
+            "<section>"
+            f"<p><strong>Mode:</strong> {html.escape(mode)}</p>"
+            f"<p><strong>Severity:</strong> {html.escape(severity.title())}</p>"
+            f"<p><strong>Files Analysed:</strong> {metrics.get('files', 0)}</p>"
+            f"<p><strong>Errors:</strong> {metrics.get('errors', 0)}</p>"
+            f"<p><strong>Warnings:</strong> {metrics.get('warnings', 0)}</p>"
+            f"<p><strong>Critical Events:</strong> {metrics.get('critical', 0)}</p>"
+            + (f"<p><strong>Tags:</strong> {tags_html}</p>" if tags else "")
+            + "</section>"
+            "<section>"
+            "<h2>LLM Summary</h2>"
+            f"<p>{summary_html}</p>"
+            "</section>"
+            "<section>"
+            "<h2>Recommended Actions</h2>"
+            f"<ul>{actions_html or '<li>Review the generated summary and log excerpts for next steps.</li>'}</ul>"
+            "</section>"
+            "<section>"
+            "<h2>File Highlights</h2>"
+            "<table>"
+            "<thead><tr><th>File</th><th>Lines</th><th>Errors</th><th>Warnings</th><th>Critical</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody>"
+            "</table>"
+            "</section>"
+            "</article>"
+        )
+
     async def _process_single_file(
         self,
         job: Job,
@@ -278,8 +497,13 @@ class JobProcessor:
             )
 
             text = await self._read_text(descriptor.path)
+            redaction_result = self._apply_redaction(text)
             summary, chunk_count = await self._analyse_and_store(
-                session, job, file_record, text
+                session,
+                job,
+                file_record,
+                redaction_result.text,
+                redaction_result.replacements,
             )
             summary.chunk_count = chunk_count
 
@@ -293,6 +517,8 @@ class JobProcessor:
                     "errors": summary.error_count,
                     "warnings": summary.warning_count,
                     "critical": summary.critical_count,
+                    "pii_redacted": summary.redaction_applied,
+                    "redaction_hits": summary.redaction_counts,
                 },
                 session=session,
             )
@@ -307,9 +533,12 @@ class JobProcessor:
         job: Job,
         file_record: File,
         text: str,
+        redactions: Optional[Dict[str, int]] = None,
     ) -> Tuple[FileSummary, int]:
         lines = text.splitlines()
         summary = self._build_summary(file_record, lines)
+        summary.redaction_counts = dict(redactions or {})
+        summary.redaction_applied = bool(summary.redaction_counts)
         chunks = self._chunk_lines(lines)
         embeddings = await self._generate_embeddings(chunks)
 
@@ -322,6 +551,7 @@ class JobProcessor:
                 metadata={
                     "filename": file_record.original_filename,
                     "chunk_index": index,
+                    "pii_redacted": summary.redaction_applied,
                 },
                 chunk_index=index,
                 chunk_size=len(chunk_text),
@@ -337,6 +567,12 @@ class JobProcessor:
             "critical_count": summary.critical_count,
             "top_keywords": summary.top_keywords,
         }
+        if summary.redaction_applied:
+            metadata["pii_redaction"] = {
+                "applied": True,
+                "replacement": settings.privacy.PII_REDACTION_REPLACEMENT,
+                "counts": summary.redaction_counts,
+            }
         file_record.metadata = metadata
         file_record.processed = True
         file_record.processed_at = datetime.utcnow()
@@ -378,14 +614,46 @@ class JobProcessor:
             ),
             LLMMessage(role="user", content="\n".join(prompt_lines)),
         ]
+        prompt_turns = [
+            {
+                "role": message.role,
+                "content": message.content,
+                "metadata": {
+                    "provider": provider_name,
+                    "model": model_name,
+                    "mode": mode,
+                    "type": "prompt",
+                },
+            }
+            for message in messages
+        ]
 
         try:
             await provider.initialize()
             response = await provider.generate(messages, temperature=0.2)
+            assistant_content = response.content.strip()
+            await self._job_service.append_conversation_turns(
+                str(job.id),
+                prompt_turns
+                + [
+                    {
+                        "role": "assistant",
+                        "content": assistant_content,
+                        "token_count": (response.usage or {}).get("total_tokens"),
+                        "metadata": {
+                            "provider": response.provider,
+                            "model": response.model,
+                            "mode": mode,
+                            "usage": response.usage or {},
+                        },
+                    }
+                ],
+                event_metadata={"provider": response.provider, "model": response.model, "mode": mode},
+            )
             return {
                 "provider": response.provider,
                 "model": response.model,
-                "summary": response.content.strip(),
+                "summary": assistant_content,
                 "usage": response.usage,
             }
         except Exception as exc:  # pragma: no cover - provider failures
@@ -394,6 +662,28 @@ class JobProcessor:
                 job.id,
                 provider_name,
                 exc,
+            )
+            await self._job_service.append_conversation_turns(
+                str(job.id),
+                prompt_turns
+                + [
+                    {
+                        "role": "assistant",
+                        "content": f"LLM analysis failed: {exc}",
+                        "metadata": {
+                            "provider": provider_name,
+                            "model": model_name,
+                            "mode": mode,
+                            "error": True,
+                        },
+                    }
+                ],
+                event_metadata={
+                    "provider": provider_name,
+                    "model": model_name,
+                    "mode": mode,
+                    "error": True,
+                },
             )
             return {
                 "provider": provider_name,
@@ -439,6 +729,12 @@ class JobProcessor:
                 path, "r", encoding="latin-1", errors="ignore"
             ) as handle:
                 return await handle.read()
+
+    def _apply_redaction(self, text: str) -> RedactionResult:
+        """Redact PII if enabled."""
+        if not text:
+            return RedactionResult(text=text, replacements={})
+        return self._pii_redactor.redact(text)
 
     def _build_summary(self, file_record: File, lines: Sequence[str]) -> FileSummary:
         lowered = [line.lower() for line in lines]

@@ -12,9 +12,11 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from starlette.responses import EventSourceResponse
 
-from core.jobs.service import JobService
+from apps.api.routers.sse import _event_stream as job_event_stream
 from core.db.models import Job, JobEvent
+from core.jobs.service import JobService
 
 router = APIRouter()
 job_service = JobService()
@@ -29,6 +31,15 @@ class JobCreateRequest(BaseModel):
     provider: str = Field(default="ollama")
     model: str = Field(default="llama2")
     priority: int = Field(default=0, ge=0, le=10)
+    model_config: Optional[Dict[str, Any]] = Field(
+        default=None, description="Provider/model tuning overrides"
+    )
+    ticketing: Optional[Dict[str, Any]] = Field(
+        default=None, description="Per-job ITSM configuration"
+    )
+    source: Optional[Dict[str, Any]] = Field(
+        default=None, description="Origin metadata (e.g. watcher path)"
+    )
 
 
 class JobResponse(BaseModel):
@@ -40,6 +51,8 @@ class JobResponse(BaseModel):
     user_id: str
     provider: str
     model: str
+    model_config: Optional[Dict[str, Any]] = None
+    input_manifest: Optional[Dict[str, Any]] = None
     priority: int
     retry_count: int
     max_retries: int
@@ -49,6 +62,9 @@ class JobResponse(BaseModel):
     completed_at: Optional[str] = None
     duration_seconds: Optional[float] = None
     result_data: Optional[Dict[str, Any]] = None
+    outputs: Optional[Dict[str, Any]] = None
+    ticketing: Optional[Dict[str, Any]] = None
+    source: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
 
     @classmethod
@@ -94,6 +110,9 @@ async def create_job(payload: JobCreateRequest) -> JobResponse:
         provider=payload.provider,
         model=payload.model,
         priority=payload.priority,
+        model_config=payload.model_config,
+        ticketing=payload.ticketing,
+        source=payload.source,
     )
     return JobResponse.from_orm(job)
 
@@ -143,6 +162,15 @@ async def job_events(
     # Enforce limit after filtering by timestamp to keep the implementation simple.
     trimmed = events[-limit:]
     return [JobEventResponse.from_orm(event) for event in trimmed]
+
+
+@router.get("/{job_id}/stream")
+async def stream_job_events(job_id: str) -> EventSourceResponse:
+    """Stream job events via server-sent events (alias for PRD compatibility)."""
+    job = await job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return EventSourceResponse(job_event_stream(job_id))
 
 
 __all__ = ["router"]

@@ -21,7 +21,18 @@ from core.logging import setup_logging
 from core.metrics import setup_metrics
 from core.security import setup_security
 from core.jobs.event_bus import job_event_bus
-from apps.api.routers import auth, jobs, files, health, sse
+from core.watchers.event_bus import watcher_event_bus
+from apps.api.routers import (
+    auth,
+    conversation,
+    files,
+    health,
+    jobs,
+    sse,
+    summary,
+    tickets,
+    watcher,
+)
 from apps.api.middleware import SecurityMiddleware, RateLimitMiddleware, RequestLoggingMiddleware
 
 # Setup logging
@@ -49,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down RCA Engine API...")
     await close_db()
     await job_event_bus.close()
+    await watcher_event_bus.close()
 
 
 # Create FastAPI application
@@ -89,6 +101,10 @@ app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(files.router, prefix="/api/files", tags=["files"])
 app.include_router(health.router, prefix="/api/health", tags=["health"])
 app.include_router(sse.router, prefix="/api/sse", tags=["streaming"])
+app.include_router(summary.router, prefix="/api/summary", tags=["summary"])
+app.include_router(conversation.router, prefix="/api/conversation", tags=["conversation"])
+app.include_router(tickets.router, prefix="/api/tickets", tags=["tickets"])
+app.include_router(watcher.router, prefix="/api/watcher", tags=["watcher"])
 
 # Mount metrics endpoint
 metrics_app = make_asgi_app()

@@ -4,6 +4,7 @@ Provides a single Settings object with nested helper views for the
 security, database, redis, LLM, file-processing, and worker subsystems.
 """
 
+import json
 from functools import cached_property
 from typing import List, Optional
 
@@ -135,6 +136,39 @@ class FileSettings(BaseModel):
     MAX_CONCURRENT_UPLOADS: int = 10
 
 
+class PrivacySettings(BaseModel):
+    """Privacy and PII handling configuration."""
+
+    ENABLE_PII_REDACTION: bool = True
+    PII_REDACTION_REPLACEMENT: str = "[REDACTED]"
+    PII_REDACTION_PATTERNS: List[str] = Field(
+        default_factory=lambda: [
+            "email::[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+",
+            "phone::\\b\\+?\\d[\\d\\s().-]{7,}\\b",
+            "ssn::\\b\\d{3}-\\d{2}-\\d{4}\\b",
+            "credit_card::\\b(?:\\d[ -]*?){13,16}\\b",
+            "ip_address::\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b",
+        ]
+    )
+
+    @field_validator("PII_REDACTION_PATTERNS", mode="before")
+    @classmethod
+    def _parse_patterns(cls, value):
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+            except json.JSONDecodeError:
+                return _split_csv(text)
+        return value
+
+
 class WorkerSettings(BaseModel):
     """Background worker configuration."""
 
@@ -241,6 +275,22 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = Field(1024 * 1024, env="CHUNK_SIZE")
     MAX_CONCURRENT_UPLOADS: int = Field(10, env="MAX_CONCURRENT_UPLOADS")
 
+    # Privacy
+    PII_REDACTION_ENABLED: bool = Field(True, env="PII_REDACTION_ENABLED")
+    PII_REDACTION_REPLACEMENT: str = Field(
+        "[REDACTED]", env="PII_REDACTION_REPLACEMENT"
+    )
+    PII_REDACTION_PATTERNS: List[str] = Field(
+        default_factory=lambda: [
+            "email::[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+",
+            "phone::\\b\\+?\\d[\\d\\s().-]{7,}\\b",
+            "ssn::\\b\\d{3}-\\d{2}-\\d{4}\\b",
+            "credit_card::\\b(?:\\d[ -]*?){13,16}\\b",
+            "ip_address::\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b",
+        ],
+        env="PII_REDACTION_PATTERNS",
+    )
+
     # Worker
     WORKER_POLL_INTERVAL: int = Field(5, env="WORKER_POLL_INTERVAL")
     WORKER_MAX_CONCURRENT_JOBS: int = Field(5, env="WORKER_MAX_CONCURRENT_JOBS")
@@ -259,6 +309,7 @@ class Settings(BaseSettings):
         "CORS_ALLOW_METHODS",
         "CORS_ALLOW_HEADERS",
         "ALLOWED_FILE_TYPES",
+        "PII_REDACTION_PATTERNS",
         mode="before",
     )
     @classmethod
@@ -374,6 +425,15 @@ class Settings(BaseSettings):
             WORKER_TIMEOUT=self.WORKER_TIMEOUT,
             WORKER_RETRY_ATTEMPTS=self.WORKER_RETRY_ATTEMPTS,
             WORKER_RETRY_DELAY=self.WORKER_RETRY_DELAY,
+        )
+
+    @cached_property
+    def privacy(self) -> PrivacySettings:
+        """Privacy configuration view."""
+        return PrivacySettings(
+            ENABLE_PII_REDACTION=self.PII_REDACTION_ENABLED,
+            PII_REDACTION_REPLACEMENT=self.PII_REDACTION_REPLACEMENT,
+            PII_REDACTION_PATTERNS=self.PII_REDACTION_PATTERNS,
         )
 
     @property

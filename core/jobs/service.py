@@ -6,15 +6,23 @@ Business logic for job processing, state management, and event tracking.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
-from sqlalchemy import select, update, and_, or_
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.db.models import Job, JobEvent, File, Document
-from core.db.database import get_db_session
-from core.jobs.event_bus import job_event_bus
 from core.config import settings
+from core.db.database import get_db_session
+from core.db.models import (
+    ConversationTurn,
+    Document,
+    File,
+    Job,
+    JobEvent,
+    Ticket,
+)
+from core.jobs.event_bus import job_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +51,78 @@ class JobService:
     async def publish_session_events(self, session: AsyncSession) -> None:
         """Public wrapper used by external callers to flush queued events."""
         await self._publish_session_events(session)
-    
+
+    async def _get_next_conversation_sequence(
+        self, session: AsyncSession, job_id: str
+    ) -> int:
+        result = await session.execute(
+            select(func.max(ConversationTurn.sequence)).where(
+                ConversationTurn.job_id == job_id
+            )
+        )
+        current = result.scalar_one_or_none()
+        return int(current or 0)
+
+    async def append_conversation_turns(
+        self,
+        job_id: str,
+        turns: List[Dict[str, Any]],
+        *,
+        event_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Persist a batch of conversation turns for a job.
+
+        Args:
+            job_id: Target job identifier.
+            turns: Sequence of dicts containing ``role`` and ``content`` keys,
+                with optional ``metadata`` or ``token_count`` entries.
+            event_metadata: Payload appended to the emitted job event.
+        """
+        if not turns:
+            return
+
+        async with self._session_factory() as session:
+            async with session.begin():
+                sequence = await self._get_next_conversation_sequence(session, job_id)
+                for turn in turns:
+                    sequence += 1
+                    record = ConversationTurn(
+                        job_id=job_id,
+                        role=turn["role"],
+                        content=turn["content"],
+                        sequence=sequence,
+                        token_count=turn.get("token_count"),
+                        metadata=turn.get("metadata") or {},
+                    )
+                    session.add(record)
+
+                await self.create_job_event(
+                    job_id,
+                    "conversation-turn",
+                    {
+                        "count": len(turns),
+                        "latest_sequence": sequence,
+                        "roles": [turn.get("role") for turn in turns],
+                        **(event_metadata or {}),
+                    },
+                    session=session,
+                )
+
+            await self._publish_session_events(session)
+
     async def create_job(
-        self, 
+        self,
         user_id: str,
         job_type: str,
         input_manifest: Dict[str, Any],
         provider: str = "ollama",
         model: str = "llama2",
-        priority: int = 0
+        priority: int = 0,
+        *,
+        model_config: Optional[Dict[str, Any]] = None,
+        ticketing: Optional[Dict[str, Any]] = None,
+        source: Optional[Dict[str, Any]] = None,
     ) -> Job:
         """Create a new analysis job."""
         async with self._session_factory() as session:
@@ -62,7 +133,10 @@ class JobService:
                 provider=provider,
                 model=model,
                 priority=priority,
-                status="pending"
+                status="pending",
+                model_config=model_config or {},
+                ticketing=ticketing or {},
+                source=source,
             )
             
             session.add(job)
@@ -91,6 +165,8 @@ class JobService:
                 .options(
                     selectinload(Job.files),
                     selectinload(Job.documents),
+                    selectinload(Job.conversation_turns),
+                    selectinload(Job.tickets),
                 )
                 .where(Job.id == job_id)
             )
@@ -209,6 +285,9 @@ class JobService:
 
                 job.status = "completed"
                 job.result_data = result_data
+                job.outputs = result_data.get("outputs") or {}
+                if "ticketing" in result_data and result_data["ticketing"]:
+                    job.ticketing = result_data["ticketing"]
                 job.completed_at = datetime.utcnow()
                 job.updated_at = datetime.utcnow()
 
@@ -348,6 +427,23 @@ class JobService:
             
             query = query.order_by(JobEvent.created_at.asc())
             
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_conversation(
+        self,
+        job_id: str,
+        limit: Optional[int] = None,
+    ) -> List[ConversationTurn]:
+        """Fetch persisted conversation turns for a job."""
+        async with self._session_factory() as session:
+            query = (
+                select(ConversationTurn)
+                .where(ConversationTurn.job_id == job_id)
+                .order_by(ConversationTurn.sequence.asc())
+            )
+            if limit:
+                query = query.limit(limit)
             result = await session.execute(query)
             return result.scalars().all()
     
