@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
 from core.config import settings
-from core.db.database import init_db, close_db
+from backend.db import session as db_session
 from core.db.models import Base
 from core.logging import setup_logging
 from core.metrics import setup_metrics
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting RCA Engine API...")
     
     # Initialize database
-    await init_db()
+    await db_session.init_db()
     
     # Setup metrics
     setup_metrics()
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     
     # Cleanup
     logger.info("Shutting down RCA Engine API...")
-    await close_db()
+    await db_session.close_db()
 
 
 # Create FastAPI application
