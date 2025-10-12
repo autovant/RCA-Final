@@ -9,6 +9,7 @@ pytest.importorskip("aiofiles")
 from fastapi import UploadFile
 from starlette import status
 from fastapi import HTTPException
+from starlette.datastructures import Headers
 
 from core.files.service import FileService
 from core.db.models import File
@@ -43,8 +44,8 @@ class _DummySession:
 
 def _upload_file(filename: str, content: bytes, content_type: str = "text/plain") -> UploadFile:
     file_obj = io.BytesIO(content)
-    upload = UploadFile(filename=filename, file=file_obj, content_type=content_type)
-    return upload
+    headers = Headers({"content-type": content_type}) if content_type else None
+    return UploadFile(file=file_obj, filename=filename, headers=headers)
 
 
 @pytest.mark.asyncio

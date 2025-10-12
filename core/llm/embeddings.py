@@ -7,11 +7,15 @@ from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
 import numpy as np
 import httpx
-from openai import AsyncOpenAI
 from core.config import settings
 from core.metrics import MetricsCollector, timer, embeddings_generation_duration_seconds
 import logging
 import time
+
+try:  # Optional dependency; only required when using OpenAI embeddings
+    from openai import AsyncOpenAI  # type: ignore
+except Exception:  # pragma: no cover - dependency optional
+    AsyncOpenAI = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +179,11 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
             api_key: Optional API key override
             organization: Optional organization ID
         """
+        if AsyncOpenAI is None:
+            raise RuntimeError(
+                "OpenAIEmbeddingProvider requires the 'openai' package. "
+                "Install it with 'pip install openai' to enable OpenAI embeddings."
+            )
         self.model = model
         self.api_key = api_key or settings.llm.OPENAI_API_KEY
         self.organization = organization or settings.llm.OPENAI_ORG_ID

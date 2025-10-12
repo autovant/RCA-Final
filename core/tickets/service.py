@@ -136,9 +136,10 @@ class TicketService:
                 "subcategory": settings.ticketing.SERVICENOW_DEFAULT_SUBCATEGORY,
                 "priority": priority,
                 "state": settings.ticketing.SERVICENOW_DEFAULT_STATE or "1",
-                "assignment_group": settings.ticketing.SERVICENOW_DEFAULT_ASSIGNMENT_GROUP,
-                "configuration_item": settings.ticketing.SERVICENOW_DEFAULT_CONFIGURATION_ITEM,
-                "assigned_to": settings.ticketing.SERVICENOW_DEFAULT_ASSIGNED_TO,
+                # Ensure optional routing fields remain present even when unset.
+                "assignment_group": settings.ticketing.SERVICENOW_DEFAULT_ASSIGNMENT_GROUP or "",
+                "configuration_item": settings.ticketing.SERVICENOW_DEFAULT_CONFIGURATION_ITEM or "",
+                "assigned_to": settings.ticketing.SERVICENOW_DEFAULT_ASSIGNED_TO or "",
             }
         )
 

@@ -91,13 +91,12 @@ async def test_process_rca_analysis_compiles_summary():
         model="stub",
         input_manifest={},
     )
-
     result = await processor.process_rca_analysis(job)
 
     assert result["analysis_type"] == "rca_analysis"
     assert result["metrics"]["errors"] == 2
     assert result["llm"]["summary"] == "rca_analysis-analysis"
-    assert len(job_service.events) == 2  # started + completed
+    assert len(processor._job_service.events) == 6  # ingestion + llm phases + file hooks
 
 
 @pytest.mark.asyncio

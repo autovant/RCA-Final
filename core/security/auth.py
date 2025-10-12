@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 # Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 # HTTP Bearer token scheme
 security = HTTPBearer()

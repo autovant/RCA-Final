@@ -316,7 +316,7 @@ class JobProcessor:
             "summary": llm_output.get("summary"),
             "llm": llm_output,
             "recommended_actions": recommended_actions,
-            "ticketing": job.ticketing or {},
+            "ticketing": getattr(job, "ticketing", None) or {},
         }
 
 

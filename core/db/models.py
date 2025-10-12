@@ -23,7 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, validates
+from sqlalchemy.orm import relationship, validates, synonym
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 
@@ -194,7 +194,13 @@ class File(Base):
     content_type = Column(String(100))
     file_size = Column(Integer, nullable=False)
     checksum = Column(String(128), nullable=False, unique=True)
-    metadata = Column(JSON, default=dict)
+    _metadata = Column("metadata", JSON, default=dict)
+
+    def __init__(self, *args, **kwargs):
+        metadata = kwargs.pop("metadata", None)
+        super().__init__(*args, **kwargs)
+        if metadata is not None:
+            self._metadata = metadata
 
     processed = Column(Boolean, default=False, nullable=False)
     processed_at = Column(DateTime(timezone=True))
@@ -251,9 +257,15 @@ class Document(Base):
     content = Column(Text, nullable=False)
     content_type = Column(String(50), nullable=False, default="text")
     content_embedding = Column(Vector(settings.VECTOR_DIMENSION))
-    metadata = Column(JSON)
+    _metadata = Column("metadata", JSON)
     chunk_index = Column(Integer, default=0)
     chunk_size = Column(Integer)
+
+    def __init__(self, *args, **kwargs):
+        metadata = kwargs.pop("metadata", None)
+        super().__init__(*args, **kwargs)
+        if metadata is not None:
+            self._metadata = metadata
 
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -304,10 +316,16 @@ class ConversationTurn(Base):
     sequence = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
     token_count = Column(Integer)
-    metadata = Column(JSON, default=dict)
+    _metadata = Column("metadata", JSON, default=dict)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    def __init__(self, *args, **kwargs):
+        metadata = kwargs.pop("metadata", None)
+        super().__init__(*args, **kwargs)
+        if metadata is not None:
+            self._metadata = metadata
 
     job = relationship("Job", back_populates="conversation_turns")
 
@@ -344,11 +362,17 @@ class Ticket(Base):
     profile_name = Column(String(100))
     dry_run = Column(Boolean, default=False, nullable=False)
     payload = Column(JSONB)
-    metadata = Column(JSONB)
+    _metadata = Column("metadata", JSONB)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def __init__(self, *args, **kwargs):
+        metadata = kwargs.pop("metadata", None)
+        super().__init__(*args, **kwargs)
+        if metadata is not None:
+            self._metadata = metadata
 
     job = relationship("Job", back_populates="tickets")
 
@@ -555,3 +579,17 @@ class User(Base):
             if self.last_login_at
             else None,
         }
+
+
+def _metadata_getter(instance):
+    return getattr(instance, "_metadata", None)
+
+
+def _metadata_setter(instance, value):
+    setattr(instance, "_metadata", value)
+
+
+File.metadata = property(_metadata_getter, _metadata_setter)
+Document.metadata = property(_metadata_getter, _metadata_setter)
+ConversationTurn.metadata = property(_metadata_getter, _metadata_setter)
+Ticket.metadata = property(_metadata_getter, _metadata_setter)
