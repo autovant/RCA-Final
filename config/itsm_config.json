@@ -1,0 +1,276 @@
+{
+  "servicenow": {
+    "defaults": {
+      "assignment_group": "IT Support",
+      "category": "Software",
+      "subcategory": "Application Error",
+      "priority": "3",
+      "state": "1",
+      "caller_id": "system.admin",
+      "impact": "3",
+      "urgency": "3"
+    },
+    "field_mapping": {
+      "short_description": {
+        "required": true,
+        "max_length": 160,
+        "description": "Brief incident summary"
+      },
+      "description": {
+        "required": false,
+        "max_length": 4000,
+        "description": "Detailed incident description"
+      },
+      "assignment_group": {
+        "required": false,
+        "type": "reference",
+        "table": "sys_user_group",
+        "description": "Group to handle the incident"
+      },
+      "assigned_to": {
+        "required": false,
+        "type": "reference",
+        "table": "sys_user",
+        "description": "Individual assigned to the incident"
+      },
+      "configuration_item": {
+        "required": false,
+        "type": "reference",
+        "table": "cmdb_ci",
+        "description": "Related configuration item"
+      },
+      "category": {
+        "required": false,
+        "type": "string",
+        "values": ["Inquiry / Help", "Software", "Hardware", "Network", "Database"],
+        "description": "Incident category"
+      },
+      "subcategory": {
+        "required": false,
+        "type": "string",
+        "description": "Incident subcategory (category-dependent)"
+      },
+      "priority": {
+        "required": false,
+        "type": "choice",
+        "values": {
+          "1": "Critical",
+          "2": "High",
+          "3": "Moderate",
+          "4": "Low",
+          "5": "Planning"
+        },
+        "description": "Incident priority level"
+      },
+      "state": {
+        "required": false,
+        "type": "choice",
+        "values": {
+          "1": "New",
+          "2": "In Progress",
+          "3": "On Hold",
+          "6": "Resolved",
+          "7": "Closed",
+          "8": "Cancelled"
+        },
+        "description": "Incident state"
+      },
+      "impact": {
+        "required": false,
+        "type": "choice",
+        "values": {
+          "1": "High",
+          "2": "Medium",
+          "3": "Low"
+        },
+        "description": "Business impact"
+      },
+      "urgency": {
+        "required": false,
+        "type": "choice",
+        "values": {
+          "1": "High",
+          "2": "Medium",
+          "3": "Low"
+        },
+        "description": "How quickly resolution is needed"
+      }
+    },
+    "custom_fields": {
+      "u_custom_field_example": {
+        "type": "string",
+        "description": "Example custom field",
+        "default_value": ""
+      }
+    },
+    "api": {
+      "table": "incident",
+      "endpoint": "/api/now/table/incident",
+      "methods": ["GET", "POST", "PUT", "PATCH"],
+      "display_fields": ["number", "short_description", "state", "priority", "assigned_to"]
+    }
+  },
+  "jira": {
+    "defaults": {
+      "project_key": "PROJ",
+      "issue_type": "Incident",
+      "priority": "Medium",
+      "labels": ["rca", "automated"]
+    },
+    "field_mapping": {
+      "project_key": {
+        "required": true,
+        "type": "string",
+        "description": "Jira project key (e.g., PROJ, OPS)",
+        "validation": "^[A-Z][A-Z0-9]+$"
+      },
+      "summary": {
+        "required": true,
+        "type": "string",
+        "max_length": 255,
+        "description": "Brief issue summary"
+      },
+      "description": {
+        "required": false,
+        "type": "text",
+        "description": "Detailed issue description (supports Jira markdown)"
+      },
+      "issue_type": {
+        "required": false,
+        "type": "string",
+        "values": ["Incident", "Bug", "Task", "Story", "Epic", "Subtask"],
+        "description": "Type of Jira issue"
+      },
+      "priority": {
+        "required": false,
+        "type": "string",
+        "values": ["Highest", "High", "Medium", "Low", "Lowest"],
+        "description": "Issue priority"
+      },
+      "assignee": {
+        "required": false,
+        "type": "user",
+        "description": "User to assign the issue to (username or email)"
+      },
+      "labels": {
+        "required": false,
+        "type": "array",
+        "description": "Labels for categorizing the issue"
+      },
+      "components": {
+        "required": false,
+        "type": "array",
+        "description": "Project components affected"
+      },
+      "fix_versions": {
+        "required": false,
+        "type": "array",
+        "description": "Versions where the issue will be fixed"
+      },
+      "affected_versions": {
+        "required": false,
+        "type": "array",
+        "description": "Versions affected by the issue"
+      },
+      "environment": {
+        "required": false,
+        "type": "text",
+        "description": "Environment where the issue occurs"
+      },
+      "due_date": {
+        "required": false,
+        "type": "date",
+        "format": "YYYY-MM-DD",
+        "description": "Due date for issue resolution"
+      }
+    },
+    "custom_fields": {
+      "customfield_10001": {
+        "type": "string",
+        "description": "Example custom field",
+        "default_value": ""
+      }
+    },
+    "api": {
+      "endpoint_create": "/rest/api/3/issue",
+      "endpoint_get": "/rest/api/3/issue/{issueIdOrKey}",
+      "endpoint_search": "/rest/api/3/search",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "display_fields": ["key", "summary", "status", "priority", "assignee"]
+    }
+  },
+  "dual_tracking": {
+    "enabled": false,
+    "description": "Link Jira issues to ServiceNow incidents",
+    "configuration": {
+      "add_to_jira_description": true,
+      "jira_description_template": "Related ServiceNow Incident: {incident_id}",
+      "store_in_metadata": true,
+      "metadata_field": "servicenow_incident_id"
+    }
+  },
+  "templates": {
+    "servicenow": {
+      "rca_incident": {
+        "short_description": "RCA Required: {job_name}",
+        "description": "An automated RCA job has identified an issue requiring investigation.\n\nJob ID: {job_id}\nTimestamp: {timestamp}\nSeverity: {severity}\n\nDetails:\n{details}",
+        "category": "Software",
+        "subcategory": "Application Error",
+        "priority": "3"
+      },
+      "critical_alert": {
+        "short_description": "Critical Alert: {alert_name}",
+        "description": "Critical alert triggered.\n\nAlert: {alert_name}\nTriggered: {timestamp}\nSeverity: Critical\n\n{alert_details}",
+        "priority": "1",
+        "urgency": "1",
+        "impact": "1"
+      }
+    },
+    "jira": {
+      "rca_issue": {
+        "summary": "RCA: {job_name}",
+        "description": "h2. Root Cause Analysis Required\\n\\nAn automated RCA job has identified an issue.\\n\\n*Job ID:* {job_id}\\n*Timestamp:* {timestamp}\\n*Severity:* {severity}\\n\\nh3. Details\\n{details}",
+        "issue_type": "Incident",
+        "priority": "Medium",
+        "labels": ["rca", "automated", "investigation"]
+      },
+      "production_incident": {
+        "summary": "Production Incident: {service_name}",
+        "description": "h2. Production Service Impacted\\n\\n*Service:* {service_name}\\n*Impact Start:* {start_time}\\n*Severity:* {severity}\\n\\nh3. Symptoms\\n{symptoms}\\n\\nh3. Next Steps\\n{action_items}",
+        "issue_type": "Incident",
+        "priority": "Highest",
+        "labels": ["production", "incident", "urgent"]
+      }
+    }
+  },
+  "validation": {
+    "enabled": true,
+    "rules": {
+      "servicenow": {
+        "validate_assignment_group": true,
+        "validate_configuration_item": true,
+        "validate_caller_id": true,
+        "validate_priority": true
+      },
+      "jira": {
+        "validate_project_key": true,
+        "validate_issue_type": true,
+        "validate_assignee": false,
+        "validate_priority": true
+      }
+    }
+  },
+  "retry_policy": {
+    "max_retries": 3,
+    "retry_delay_seconds": 5,
+    "exponential_backoff": true,
+    "backoff_multiplier": 2,
+    "max_retry_delay_seconds": 60,
+    "retryable_status_codes": [429, 500, 502, 503, 504]
+  },
+  "timeout": {
+    "connection_timeout_seconds": 10,
+    "read_timeout_seconds": 30,
+    "total_timeout_seconds": 60
+  }
+}

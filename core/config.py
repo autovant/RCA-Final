@@ -6,7 +6,7 @@ security, database, redis, LLM, file-processing, and worker subsystems.
 
 import json
 from functools import cached_property
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -179,6 +179,84 @@ class WorkerSettings(BaseModel):
     WORKER_RETRY_DELAY: int = 60
 
 
+class TicketingSettings(BaseModel):
+    """ITSM integration settings and defaults."""
+
+    SERVICENOW_ENABLED: bool = False
+    SERVICENOW_INSTANCE_URL: Optional[str] = None
+    SERVICENOW_AUTH_TYPE: str = "basic"
+    SERVICENOW_USERNAME: Optional[str] = None
+    SERVICENOW_PASSWORD: Optional[str] = None
+    SERVICENOW_CLIENT_ID: Optional[str] = None
+    SERVICENOW_CLIENT_SECRET: Optional[str] = None
+    SERVICENOW_TOKEN_URL: Optional[str] = None
+    SERVICENOW_DEFAULT_ASSIGNMENT_GROUP: Optional[str] = None
+    SERVICENOW_DEFAULT_CONFIGURATION_ITEM: Optional[str] = None
+    SERVICENOW_DEFAULT_CATEGORY: Optional[str] = None
+    SERVICENOW_DEFAULT_SUBCATEGORY: Optional[str] = None
+    SERVICENOW_DEFAULT_PRIORITY: Optional[str] = None
+    SERVICENOW_DEFAULT_STATE: Optional[str] = None
+    SERVICENOW_DEFAULT_ASSIGNED_TO: Optional[str] = None
+
+    JIRA_ENABLED: bool = False
+    JIRA_BASE_URL: Optional[str] = None
+    JIRA_AUTH_TYPE: str = "basic"
+    JIRA_USERNAME: Optional[str] = None
+    JIRA_API_TOKEN: Optional[str] = None
+    JIRA_BEARER_TOKEN: Optional[str] = None
+    JIRA_API_VERSION: str = "3"
+    JIRA_DEFAULT_PROJECT_KEY: Optional[str] = None
+    JIRA_DEFAULT_ISSUE_TYPE: str = "Incident"
+    JIRA_DEFAULT_PRIORITY: Optional[str] = None
+    JIRA_DEFAULT_LABELS: List[str] = Field(default_factory=list)
+    JIRA_DEFAULT_ASSIGNEE: Optional[str] = None
+
+    ITSM_DUAL_MODE_DEFAULT: bool = False
+    ITSM_STATUS_REFRESH_SECONDS: int = 60
+
+    @field_validator("JIRA_DEFAULT_LABELS", mode="before")
+    @classmethod
+    def _coerce_labels(cls, value):
+        if isinstance(value, str):
+            return _split_csv(value)
+        return value
+
+    def as_servicenow_config(self) -> Dict[str, Optional[str]]:
+        """Return a dict suitable for the ServiceNow client configuration."""
+        return {
+            "base_url": self.SERVICENOW_INSTANCE_URL,
+            "auth_type": self.SERVICENOW_AUTH_TYPE,
+            "username": self.SERVICENOW_USERNAME,
+            "password": self.SERVICENOW_PASSWORD,
+            "client_id": self.SERVICENOW_CLIENT_ID,
+            "client_secret": self.SERVICENOW_CLIENT_SECRET,
+            "token_url": self.SERVICENOW_TOKEN_URL,
+            "default_assignment_group": self.SERVICENOW_DEFAULT_ASSIGNMENT_GROUP,
+            "default_configuration_item": self.SERVICENOW_DEFAULT_CONFIGURATION_ITEM,
+            "default_category": self.SERVICENOW_DEFAULT_CATEGORY,
+            "default_subcategory": self.SERVICENOW_DEFAULT_SUBCATEGORY,
+            "default_priority": self.SERVICENOW_DEFAULT_PRIORITY,
+            "default_state": self.SERVICENOW_DEFAULT_STATE,
+            "assigned_to": self.SERVICENOW_DEFAULT_ASSIGNED_TO,
+        }
+
+    def as_jira_config(self) -> Dict[str, Optional[str]]:
+        """Return a dict suitable for the Jira client configuration."""
+        return {
+            "base_url": self.JIRA_BASE_URL,
+            "auth_type": self.JIRA_AUTH_TYPE,
+            "username": self.JIRA_USERNAME,
+            "api_token": self.JIRA_API_TOKEN,
+            "bearer_token": self.JIRA_BEARER_TOKEN,
+            "api_version": self.JIRA_API_VERSION,
+            "default_project_key": self.JIRA_DEFAULT_PROJECT_KEY,
+            "default_issue_type": self.JIRA_DEFAULT_ISSUE_TYPE,
+            "default_priority": self.JIRA_DEFAULT_PRIORITY,
+            "default_labels": self.JIRA_DEFAULT_LABELS,
+            "assignee": self.JIRA_DEFAULT_ASSIGNEE,
+        }
+
+
 class Settings(BaseSettings):
     """Main application settings exposed as a singleton."""
 
@@ -297,6 +375,53 @@ class Settings(BaseSettings):
     WORKER_TIMEOUT: int = Field(1800, env="WORKER_TIMEOUT")
     WORKER_RETRY_ATTEMPTS: int = Field(3, env="WORKER_RETRY_ATTEMPTS")
     WORKER_RETRY_DELAY: int = Field(60, env="WORKER_RETRY_DELAY")
+
+    # Ticketing defaults
+    SERVICENOW_ENABLED: bool = Field(False, env="SERVICENOW_ENABLED")
+    SERVICENOW_INSTANCE_URL: Optional[str] = Field(None, env="SERVICENOW_INSTANCE_URL")
+    SERVICENOW_AUTH_TYPE: str = Field("basic", env="SERVICENOW_AUTH_TYPE")
+    SERVICENOW_USERNAME: Optional[str] = Field(None, env="SERVICENOW_USERNAME")
+    SERVICENOW_PASSWORD: Optional[str] = Field(None, env="SERVICENOW_PASSWORD")
+    SERVICENOW_CLIENT_ID: Optional[str] = Field(None, env="SERVICENOW_CLIENT_ID")
+    SERVICENOW_CLIENT_SECRET: Optional[str] = Field(None, env="SERVICENOW_CLIENT_SECRET")
+    SERVICENOW_TOKEN_URL: Optional[str] = Field(None, env="SERVICENOW_TOKEN_URL")
+    SERVICENOW_DEFAULT_ASSIGNMENT_GROUP: Optional[str] = Field(
+        None, env="SERVICENOW_DEFAULT_ASSIGNMENT_GROUP"
+    )
+    SERVICENOW_DEFAULT_CONFIGURATION_ITEM: Optional[str] = Field(
+        None, env="SERVICENOW_DEFAULT_CONFIGURATION_ITEM"
+    )
+    SERVICENOW_DEFAULT_CATEGORY: Optional[str] = Field(
+        None, env="SERVICENOW_DEFAULT_CATEGORY"
+    )
+    SERVICENOW_DEFAULT_SUBCATEGORY: Optional[str] = Field(
+        None, env="SERVICENOW_DEFAULT_SUBCATEGORY"
+    )
+    SERVICENOW_DEFAULT_PRIORITY: Optional[str] = Field(
+        None, env="SERVICENOW_DEFAULT_PRIORITY"
+    )
+    SERVICENOW_DEFAULT_STATE: Optional[str] = Field(None, env="SERVICENOW_DEFAULT_STATE")
+    SERVICENOW_DEFAULT_ASSIGNED_TO: Optional[str] = Field(
+        None, env="SERVICENOW_DEFAULT_ASSIGNED_TO"
+    )
+
+    JIRA_ENABLED: bool = Field(False, env="JIRA_ENABLED")
+    JIRA_BASE_URL: Optional[str] = Field(None, env="JIRA_BASE_URL")
+    JIRA_AUTH_TYPE: str = Field("basic", env="JIRA_AUTH_TYPE")
+    JIRA_USERNAME: Optional[str] = Field(None, env="JIRA_USERNAME")
+    JIRA_API_TOKEN: Optional[str] = Field(None, env="JIRA_API_TOKEN")
+    JIRA_BEARER_TOKEN: Optional[str] = Field(None, env="JIRA_BEARER_TOKEN")
+    JIRA_API_VERSION: str = Field("3", env="JIRA_API_VERSION")
+    JIRA_DEFAULT_PROJECT_KEY: Optional[str] = Field(
+        None, env="JIRA_DEFAULT_PROJECT_KEY"
+    )
+    JIRA_DEFAULT_ISSUE_TYPE: str = Field("Incident", env="JIRA_DEFAULT_ISSUE_TYPE")
+    JIRA_DEFAULT_PRIORITY: Optional[str] = Field(None, env="JIRA_DEFAULT_PRIORITY")
+    JIRA_DEFAULT_LABELS: List[str] = Field(default_factory=list, env="JIRA_DEFAULT_LABELS")
+    JIRA_DEFAULT_ASSIGNEE: Optional[str] = Field(None, env="JIRA_DEFAULT_ASSIGNEE")
+
+    ITSM_DUAL_MODE_DEFAULT: bool = Field(False, env="ITSM_DUAL_MODE_DEFAULT")
+    ITSM_STATUS_REFRESH_SECONDS: int = Field(60, env="ITSM_STATUS_REFRESH_SECONDS")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -434,6 +559,41 @@ class Settings(BaseSettings):
             ENABLE_PII_REDACTION=self.PII_REDACTION_ENABLED,
             PII_REDACTION_REPLACEMENT=self.PII_REDACTION_REPLACEMENT,
             PII_REDACTION_PATTERNS=self.PII_REDACTION_PATTERNS,
+        )
+
+    @cached_property
+    def ticketing(self) -> TicketingSettings:
+        """ITSM integration defaults."""
+        return TicketingSettings(
+            SERVICENOW_ENABLED=self.SERVICENOW_ENABLED,
+            SERVICENOW_INSTANCE_URL=self.SERVICENOW_INSTANCE_URL,
+            SERVICENOW_AUTH_TYPE=self.SERVICENOW_AUTH_TYPE,
+            SERVICENOW_USERNAME=self.SERVICENOW_USERNAME,
+            SERVICENOW_PASSWORD=self.SERVICENOW_PASSWORD,
+            SERVICENOW_CLIENT_ID=self.SERVICENOW_CLIENT_ID,
+            SERVICENOW_CLIENT_SECRET=self.SERVICENOW_CLIENT_SECRET,
+            SERVICENOW_TOKEN_URL=self.SERVICENOW_TOKEN_URL,
+            SERVICENOW_DEFAULT_ASSIGNMENT_GROUP=self.SERVICENOW_DEFAULT_ASSIGNMENT_GROUP,
+            SERVICENOW_DEFAULT_CONFIGURATION_ITEM=self.SERVICENOW_DEFAULT_CONFIGURATION_ITEM,
+            SERVICENOW_DEFAULT_CATEGORY=self.SERVICENOW_DEFAULT_CATEGORY,
+            SERVICENOW_DEFAULT_SUBCATEGORY=self.SERVICENOW_DEFAULT_SUBCATEGORY,
+            SERVICENOW_DEFAULT_PRIORITY=self.SERVICENOW_DEFAULT_PRIORITY,
+            SERVICENOW_DEFAULT_STATE=self.SERVICENOW_DEFAULT_STATE,
+            SERVICENOW_DEFAULT_ASSIGNED_TO=self.SERVICENOW_DEFAULT_ASSIGNED_TO,
+            JIRA_ENABLED=self.JIRA_ENABLED,
+            JIRA_BASE_URL=self.JIRA_BASE_URL,
+            JIRA_AUTH_TYPE=self.JIRA_AUTH_TYPE,
+            JIRA_USERNAME=self.JIRA_USERNAME,
+            JIRA_API_TOKEN=self.JIRA_API_TOKEN,
+            JIRA_BEARER_TOKEN=self.JIRA_BEARER_TOKEN,
+            JIRA_API_VERSION=self.JIRA_API_VERSION,
+            JIRA_DEFAULT_PROJECT_KEY=self.JIRA_DEFAULT_PROJECT_KEY,
+            JIRA_DEFAULT_ISSUE_TYPE=self.JIRA_DEFAULT_ISSUE_TYPE,
+            JIRA_DEFAULT_PRIORITY=self.JIRA_DEFAULT_PRIORITY,
+            JIRA_DEFAULT_LABELS=self.JIRA_DEFAULT_LABELS,
+            JIRA_DEFAULT_ASSIGNEE=self.JIRA_DEFAULT_ASSIGNEE,
+            ITSM_DUAL_MODE_DEFAULT=self.ITSM_DUAL_MODE_DEFAULT,
+            ITSM_STATUS_REFRESH_SECONDS=self.ITSM_STATUS_REFRESH_SECONDS,
         )
 
     @property

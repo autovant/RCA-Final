@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 
 const API_BASE =
@@ -23,8 +23,77 @@ type JobEventEntry = {
   receivedAt: string;
 };
 
+type TicketSettings = {
+  servicenow_enabled: boolean;
+  jira_enabled: boolean;
+  dual_mode: boolean;
+};
+
+type TicketRecord = {
+  id: string;
+  job_id: string;
+  platform: "servicenow" | "jira";
+  ticket_id: string;
+  url?: string | null;
+  status: string;
+  profile_name?: string | null;
+  dry_run: boolean;
+  payload: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type TicketListResponse = {
+  job_id: string;
+  tickets: TicketRecord[];
+};
+
+const PLACEHOLDER_TICKETS: TicketRecord[] = [
+  {
+    id: "placeholder-servicenow",
+    job_id: "demo",
+    platform: "servicenow",
+    ticket_id: "INC0012345",
+    url: "https://example.service-now.com/nav_to.do?uri=incident.do?sys_id=demo",
+    status: "In Progress",
+    profile_name: null,
+    dry_run: true,
+    payload: {
+      short_description: "Demo incident prepared from RCA summary",
+      priority: "2",
+    },
+    metadata: {
+      placeholder: true,
+      synopsis: "Use this demo incident to showcase ITSM workflows when integrations are offline.",
+    },
+    created_at: new Date().toISOString(),
+    updated_at: null,
+  },
+  {
+    id: "placeholder-jira",
+    job_id: "demo",
+    platform: "jira",
+    ticket_id: "OPS-1099",
+    url: "https://example.atlassian.net/browse/OPS-1099",
+    status: "To Do",
+    profile_name: null,
+    dry_run: true,
+    payload: {
+      summary: "Demo Jira issue created from RCA automation",
+      project_key: "OPS",
+    },
+    metadata: {
+      placeholder: true,
+      synopsis: "Demonstrates dual-tracking experience for Jira when APIs are unavailable.",
+    },
+    created_at: new Date().toISOString(),
+    updated_at: null,
+  },
+];
+
 const toISO = (value?: string) =>
-  value ? new Date(value).toLocaleString() : "—";
+  value ? new Date(value).toLocaleString() : "-";
 
 export default function HomePage() {
   const [username, setUsername] = useState("");
@@ -38,6 +107,16 @@ export default function HomePage() {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobError, setJobError] = useState<string | null>(null);
 
+  const [ticketSettings, setTicketSettings] = useState<TicketSettings | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [ticketSettingsBusy, setTicketSettingsBusy] = useState(false);
+  const [ticketError, setTicketError] = useState<string | null>(null);
+  const [tickets, setTickets] = useState<TicketRecord[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [ticketFilter, setTicketFilter] = useState("");
+  const [ticketAutoRefresh, setTicketAutoRefresh] = useState(true);
+  const [dispatchingTickets, setDispatchingTickets] = useState(false);
+
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [jobEvents, setJobEvents] = useState<JobEventEntry[]>([]);
 
@@ -48,19 +127,56 @@ export default function HomePage() {
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
 
+  const ticketRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const api = useMemo(() => axios.create({ baseURL: API_BASE }), []);
 
   useEffect(() => {
     if (accessToken) {
       api.defaults.headers.common.Authorization = `Bearer ${accessToken}`;
       fetchJobs();
+      fetchTicketSettings();
     } else {
       delete api.defaults.headers.common.Authorization;
       setJobs([]);
       setSelectedJobId(null);
       setJobEvents([]);
+      setTicketSettings(null);
+      setTickets([]);
     }
-  }, [api, accessToken]);
+  }, [api, accessToken, fetchTicketSettings]);
+
+  useEffect(() => {
+    if (!accessToken || !selectedJobId) {
+      if (!selectedJobId) {
+        setTickets([]);
+      }
+      return;
+    }
+
+    fetchTickets(selectedJobId, true);
+  }, [accessToken, selectedJobId, fetchTickets]);
+
+  useEffect(() => {
+    if (!selectedJobId || !ticketAutoRefresh) {
+      if (ticketRefreshRef.current) {
+        clearInterval(ticketRefreshRef.current);
+        ticketRefreshRef.current = null;
+      }
+      return;
+    }
+
+    ticketRefreshRef.current = setInterval(() => {
+      fetchTickets(selectedJobId, true);
+    }, 30000);
+
+    return () => {
+      if (ticketRefreshRef.current) {
+        clearInterval(ticketRefreshRef.current);
+        ticketRefreshRef.current = null;
+      }
+    };
+  }, [selectedJobId, ticketAutoRefresh, fetchTickets]);
 
   const fetchJobs = async () => {
     try {
@@ -72,6 +188,180 @@ export default function HomePage() {
     } finally {
       setJobsLoading(false);
     }
+  };
+
+  const fetchTicketSettings = useCallback(async () => {
+    if (!accessToken) {
+      setTicketSettings(null);
+      return;
+    }
+
+    try {
+      setSettingsLoading(true);
+      const response = await api.get<TicketSettings>("/api/tickets/settings/state");
+      setTicketSettings(response.data);
+    } catch (error: any) {
+      setTicketError(error?.response?.data?.detail ?? "Unable to load ticket settings");
+    } finally {
+      setSettingsLoading(false);
+    }
+  }, [accessToken, api]);
+
+  const updateTicketSettings = async (patch: Partial<TicketSettings>) => {
+    if (!accessToken) {
+      return;
+    }
+    setTicketError(null);
+    setTicketSettingsBusy(true);
+
+    try {
+      const response = await api.put<TicketSettings>("/api/tickets/settings/state", patch);
+      setTicketSettings(response.data);
+    } catch (error: any) {
+      setTicketError(error?.response?.data?.detail ?? "Unable to update ticket settings");
+    } finally {
+      setTicketSettingsBusy(false);
+    }
+  };
+
+  const fetchTickets = useCallback(
+    async (jobId: string, refresh = false) => {
+      if (!jobId) {
+        return;
+      }
+
+      try {
+        setTicketsLoading(true);
+        setTicketError(null);
+        const response = await api.get<TicketListResponse>(`/api/tickets/${jobId}`, {
+          params: { refresh },
+        });
+        setTickets(response.data.tickets);
+      } catch (error: any) {
+        setTicketError(error?.response?.data?.detail ?? "Unable to load tickets");
+      } finally {
+        setTicketsLoading(false);
+      }
+    },
+    [api]
+  );
+
+  const handleDispatchTickets = async (dryRun: boolean) => {
+    if (!selectedJobId) {
+      setTicketError("Select a job before generating tickets.");
+      return;
+    }
+
+    if (
+      !dryRun &&
+      (!ticketSettings ||
+        (!ticketSettings.servicenow_enabled && !ticketSettings.jira_enabled))
+    ) {
+      setTicketError("Enable at least one integration before creating live tickets.");
+      return;
+    }
+
+    setDispatchingTickets(true);
+    setTicketError(null);
+
+    try {
+      const response = await api.post<TicketListResponse>("/api/tickets/dispatch", {
+        job_id: selectedJobId,
+        payloads: {},
+        dry_run: dryRun,
+      });
+      setTickets(response.data.tickets);
+    } catch (error: any) {
+      setTicketError(error?.response?.data?.detail ?? "Ticket dispatch failed");
+    } finally {
+      setDispatchingTickets(false);
+    }
+  };
+
+  const filteredTickets = useMemo(() => {
+    if (!ticketFilter.trim()) {
+      return tickets;
+    }
+    const needle = ticketFilter.toLowerCase();
+    return tickets.filter((ticket) => {
+      const segments = [
+        ticket.ticket_id,
+        ticket.status,
+        ticket.platform,
+        JSON.stringify(ticket.payload ?? {}),
+        JSON.stringify(ticket.metadata ?? {}),
+      ];
+      return segments.some((segment) =>
+        segment ? segment.toLowerCase().includes(needle) : false
+      );
+    });
+  }, [tickets, ticketFilter]);
+
+  const groupedTickets = useMemo(() => {
+    const base: Record<"servicenow" | "jira", TicketRecord[]> = {
+      servicenow: [],
+      jira: [],
+    };
+    filteredTickets.forEach((ticket) => {
+      base[ticket.platform].push(ticket);
+    });
+    return base;
+  }, [filteredTickets]);
+
+  const placeholderGroups = useMemo(() => {
+    const base: Record<"servicenow" | "jira", TicketRecord[]> = {
+      servicenow: [],
+      jira: [],
+    };
+    PLACEHOLDER_TICKETS.forEach((ticket) => {
+      base[ticket.platform].push(ticket);
+    });
+    return base;
+  }, []);
+
+  const dualModeActive =
+    !!ticketSettings?.dual_mode &&
+    !!ticketSettings?.servicenow_enabled &&
+    !!ticketSettings?.jira_enabled;
+
+  const togglesDisabled = settingsLoading || ticketSettingsBusy;
+
+  const platformMeta = {
+    servicenow: {
+      title: "ServiceNow Incidents",
+      accent: "border-emerald-500/60",
+      badge: "border border-emerald-500/40 text-emerald-300",
+      description: "INC lifecycle synced from RCA insights.",
+      enabled: !!ticketSettings?.servicenow_enabled,
+    },
+    jira: {
+      title: "Jira Issues",
+      accent: "border-sky-500/60",
+      badge: "border border-sky-500/40 text-sky-300",
+      description: "Engineering work tracked via Jira automation.",
+      enabled: !!ticketSettings?.jira_enabled,
+    },
+  } as const;
+
+  const statusTone = (status: string) => {
+    const normalised = status.toLowerCase();
+    if (normalised.includes("progress") || normalised.includes("working")) {
+      return "border border-amber-500/40 bg-amber-500/10 text-amber-200";
+    }
+    if (
+      normalised.includes("resolve") ||
+      normalised.includes("closed") ||
+      normalised.includes("done")
+    ) {
+      return "border border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+    }
+    if (normalised.includes("fail") || normalised.includes("error")) {
+      return "border border-rose-500/40 bg-rose-500/10 text-rose-200";
+    }
+    if (normalised.includes("dry")) {
+      return "border border-slate-600 bg-slate-800/60 text-slate-200";
+    }
+    return "border border-sky-500/40 bg-sky-500/10 text-sky-200";
   };
 
   const handleLogin = async (event: FormEvent) => {

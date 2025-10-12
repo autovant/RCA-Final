@@ -416,6 +416,31 @@ class ItsmProfile(Base):
         }
 
 
+class TicketIntegrationSettings(Base):
+    """Feature toggle state for ITSM integrations."""
+
+    __tablename__ = "ticket_integration_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    servicenow_enabled = Column(Boolean, default=False, nullable=False)
+    jira_enabled = Column(Boolean, default=False, nullable=False)
+    dual_mode = Column(Boolean, default=False, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "servicenow_enabled": self.servicenow_enabled,
+            "jira_enabled": self.jira_enabled,
+            "dual_mode": self.dual_mode,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class WatcherConfig(Base):
     """File watcher configuration (single row)."""
 
