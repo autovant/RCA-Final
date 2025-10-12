@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import os
 import re
 from pathlib import Path
@@ -109,7 +110,9 @@ class FileService:
             metadata=metadata,
         )
 
-        session.add(file_record)
+        maybe_awaitable = session.add(file_record)
+        if inspect.isawaitable(maybe_awaitable):
+            await maybe_awaitable
         await session.flush()
         await session.refresh(file_record)
         logger.info("Stored upload %s for job %s", file_record.id, job_id)
@@ -199,3 +202,29 @@ def _sanitise_filename(filename: str) -> str:
     # Replace unsafe characters
     safe = _SAFE_FILENAME_RE.sub("_", name)
     return safe.strip("._") or "upload"
+
+
+        try:
+            async with aiofiles.open(dest_path, "wb") as buffer:
+                while True:
+                    chunk = await upload.read(settings.files.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    # Check size BEFORE writing the chunk
+                    if bytes_written + len(chunk) > self._max_bytes:
+                        write_error = True
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"File exceeds limit of {self._max_bytes} bytes",
+                        )
+                    bytes_written += len(chunk)
+                    hasher.update(chunk)
+                    await buffer.write(chunk)
+        except Exception:
+            write_error = True
+            raise
+        finally:
+            await upload.seek(0)
+            if write_error:
+                # Clean up partially written file if there was an error
+                await self._delete_path(dest_path)

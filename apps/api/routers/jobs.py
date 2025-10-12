@@ -174,3 +174,22 @@ async def stream_job_events(job_id: str) -> EventSourceResponse:
 
 
 __all__ = ["router"]
+
+from datetime import datetime, timezone
+def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+
+    # Handle 'Z' suffix and ensure timezone awareness
+    cleaned = value.rstrip("Z")
+    try:
+        dt = datetime.fromisoformat(cleaned)
+        # If the datetime is naive, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError as exc:  # pragma: no cover - defensive guard
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid ISO8601 timestamp: {value}",
+        ) from exc

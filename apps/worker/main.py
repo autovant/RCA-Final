@@ -129,3 +129,10 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Worker failed to start: {e}", exc_info=True)
         sys.exit(1)
+
+    def _handle_signal(self, signum, frame):
+        """Handle shutdown signals."""
+        logger.info(f"Received signal {signum}, shutting down...")
+        self.running = False
+        # Don't call sys.exit here - let the worker loop finish naturally
+        # to ensure proper cleanup via the finally block in start()
