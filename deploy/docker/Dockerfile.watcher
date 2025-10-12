@@ -1,0 +1,56 @@
+# Multi-stage build for file watcher service
+FROM python:3.11-slim as builder
+
+# Set working directory
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Final stage
+FROM python:3.11-slim
+
+# Create non-root user
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+RUN groupadd -g ${GROUP_ID} watcher && \
+    useradd -u ${USER_ID} -g watcher -m -s /bin/bash watcher
+
+# Set working directory
+WORKDIR /app
+
+# Copy Python dependencies from builder
+COPY --from=builder /root/.local /home/watcher/.local
+
+# Copy application code
+COPY --chown=watcher:watcher core/ ./core/
+COPY --chown=watcher:watcher apps/worker/ ./apps/worker/
+COPY --chown=watcher:watcher scripts/file_watcher.py ./scripts/
+
+# Create necessary directories
+RUN mkdir -p /app/watch-folder /app/uploads /app/logs && \
+    chown -R watcher:watcher /app
+
+# Set environment variables
+ENV PATH=/home/watcher/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Switch to non-root user
+USER watcher
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import os; exit(0 if os.path.exists('/app/watch-folder') else 1)"
+
+# Run the file watcher
+CMD ["python", "-m", "scripts.file_watcher"]

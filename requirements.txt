@@ -31,6 +31,7 @@ structlog==23.2.0
 # File Processing
 python-magic==0.4.27
 chardet==5.2.0
+watchdog==3.0.0
 
 # LLM Integration
 ollama==0.1.7

@@ -1,0 +1,83 @@
+groups:
+  - name: rca_engine_alerts
+    interval: 30s
+    rules:
+      # Job failure rate alert
+      - alert: HighJobFailureRate
+        expr: rate(rca_jobs_failed_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High job failure rate detected"
+          description: "Job failure rate is {{ $value }} failures/sec over the last 5 minutes"
+
+      # Critical job failure rate
+      - alert: CriticalJobFailureRate
+        expr: rate(rca_jobs_failed_total[5m]) > 0.5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical job failure rate detected"
+          description: "Job failure rate is {{ $value }} failures/sec over the last 5 minutes"
+
+      # Database connection issues
+      - alert: DatabaseConnectionFailure
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "Cannot connect to PostgreSQL database"
+
+      # High API latency
+      - alert: HighAPILatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency detected"
+          description: "95th percentile latency is {{ $value }}s"
+
+      # Ticket creation failures
+      - alert: TicketCreationFailures
+        expr: rate(rca_ticket_create_failures_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High ticket creation failure rate"
+          description: "Ticket creation failure rate is {{ $value }} failures/sec"
+
+      # File watcher issues
+      - alert: FileWatcherNotProcessing
+        expr: rate(rca_watcher_files_ingested_total[10m]) == 0 and rate(rca_watcher_files_detected_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "File watcher detected files but not processing"
+          description: "Files are being detected but not ingested"
+
+      # Memory usage alert
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 90%"
+
+      # Disk space alert
+      - alert: LowDiskSpace
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space"
+          description: "Less than 10% disk space available"
