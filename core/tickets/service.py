@@ -116,13 +116,23 @@ class TicketService:
             ]
         )
 
+        category = None
+        categories_field = job_dict.get("categories")
+        if isinstance(categories_field, list) and categories_field:
+            category = categories_field[0]
+        elif isinstance(categories_field, str) and categories_field:
+            category = categories_field
+        else:
+            category = job_dict.get("category")
+
+        if not category:
+            category = settings.ticketing.SERVICENOW_DEFAULT_CATEGORY
+
         return _clean_payload(
             {
                 "short_description": summary[:160],
                 "description": "\n".join(description_lines),
-                "category": job_dict.get("categories", [None])[0]
-                if isinstance(job_dict.get("categories"), list)
-                else job_dict.get("category"),
+                "category": category,
                 "subcategory": settings.ticketing.SERVICENOW_DEFAULT_SUBCATEGORY,
                 "priority": priority,
                 "state": settings.ticketing.SERVICENOW_DEFAULT_STATE or "1",

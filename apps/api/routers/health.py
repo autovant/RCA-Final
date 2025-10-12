@@ -35,4 +35,17 @@ async def readiness() -> dict:
     }
 
 
+# Kubernetes-style aliases
+@router.get("/healthz")
+async def healthz() -> dict:
+    """Kubernetes-style liveness probe alias."""
+    return await liveness()
+
+
+@router.get("/readyz")
+async def readyz() -> dict:
+    """Kubernetes-style readiness probe alias."""
+    return await readiness()
+
+
 __all__ = ["router"]

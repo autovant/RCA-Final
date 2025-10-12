@@ -700,6 +700,204 @@ export default function HomePage() {
         </div>
       </section>
 
+      <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-6 shadow-xl shadow-black/30 space-y-5">
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <h2 className="text-xl font-semibold text-white">Ticket automation cockpit</h2>
+            <p className="text-sm text-slate-400">
+              Control ServiceNow and Jira ticket creation, then monitor statuses without leaving the RCA console.
+            </p>
+            {selectedJobId ? (
+              <p className="text-xs font-mono text-slate-500">Selected job: {selectedJobId}</p>
+            ) : (
+              <p className="text-xs text-slate-500">Select a job to enable ticket orchestration actions.</p>
+            )}
+          </div>
+          <div className="flex flex-col gap-2 md:flex-row md:items-center">
+            <button
+              type="button"
+              onClick={() => handleDispatchTickets(true)}
+              disabled={!selectedJobId || dispatchingTickets}
+              className="rounded border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
+            >
+              {dispatchingTickets ? "Dispatching..." : "Preview Tickets"}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDispatchTickets(false)}
+              disabled={
+                !selectedJobId ||
+                dispatchingTickets ||
+                !ticketSettings ||
+                (!ticketSettings.servicenow_enabled && !ticketSettings.jira_enabled)
+              }
+              className="rounded bg-indigo-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:bg-indigo-900"
+            >
+              {dispatchingTickets ? "Submitting..." : "Create Live Tickets"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-4">
+          <label className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-200">
+            <span>ServiceNow</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-emerald-500"
+              disabled={togglesDisabled || !ticketSettings}
+              checked={!!ticketSettings?.servicenow_enabled}
+              onChange={() =>
+                ticketSettings &&
+                updateTicketSettings({ servicenow_enabled: !ticketSettings.servicenow_enabled })
+              }
+            />
+          </label>
+          <label className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-200">
+            <span>Jira</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-sky-500"
+              disabled={togglesDisabled || !ticketSettings}
+              checked={!!ticketSettings?.jira_enabled}
+              onChange={() =>
+                ticketSettings &&
+                updateTicketSettings({ jira_enabled: !ticketSettings.jira_enabled })
+              }
+            />
+          </label>
+          <label className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-200">
+            <span>Dual tracking</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-purple-500"
+              disabled={
+                togglesDisabled ||
+                !ticketSettings ||
+                !(ticketSettings.servicenow_enabled && ticketSettings.jira_enabled)
+              }
+              checked={!!ticketSettings?.dual_mode}
+              onChange={() =>
+                ticketSettings &&
+                updateTicketSettings({ dual_mode: !ticketSettings.dual_mode })
+              }
+            />
+          </label>
+          <label className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-200">
+            <span>Auto refresh</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-amber-500"
+              checked={ticketAutoRefresh}
+              onChange={() => setTicketAutoRefresh((value) => !value)}
+            />
+          </label>
+        </div>
+
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <label className="flex w-full max-w-md flex-col gap-1">
+            <span className="text-xs uppercase tracking-wide text-slate-400">Search tickets</span>
+            <input
+              className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              placeholder="Filter by ticket id, status, platform, payload..."
+              value={ticketFilter}
+              onChange={(event) => setTicketFilter(event.target.value)}
+            />
+          </label>
+          {dualModeActive ? (
+            <span className="inline-flex items-center gap-2 self-start rounded-full border border-purple-500/40 bg-purple-500/10 px-3 py-1 text-xs font-semibold text-purple-200">
+              Dual mode active
+            </span>
+          ) : null}
+        </div>
+
+        {ticketError ? <p className="text-sm text-rose-400">{ticketError}</p> : null}
+
+        <div className="grid gap-5 md:grid-cols-2">
+          {(Object.keys(platformMeta) as Array<"servicenow" | "jira">).map((platform) => {
+            const meta = platformMeta[platform];
+            const activeTickets = groupedTickets[platform];
+            const showPlaceholder = activeTickets.length === 0;
+            const ticketsToRender = showPlaceholder ? placeholderGroups[platform] : activeTickets;
+
+            return (
+              <div
+                key={platform}
+                className={`rounded-xl border ${meta.accent} bg-slate-950/60 p-4 space-y-3`}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold capitalize text-white">{meta.title}</h3>
+                    <p className="text-xs text-slate-400">{meta.description}</p>
+                  </div>
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs uppercase tracking-wide ${
+                      meta.enabled ? meta.badge : "border border-slate-700 text-slate-500"
+                    }`}
+                  >
+                    {meta.enabled ? "enabled" : "disabled"}
+                  </span>
+                </div>
+
+                {ticketsLoading && !activeTickets.length ? (
+                  <p className="text-sm text-slate-500">Refreshing ticket status…</p>
+                ) : null}
+
+                <div className="space-y-3">
+                  {ticketsToRender.map((ticket) => (
+                    <article
+                      key={ticket.id}
+                      className="rounded-lg border border-slate-800 bg-slate-900/80 p-3 text-sm text-slate-200"
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <span className={`rounded-full px-2 py-0.5 ${statusTone(ticket.status || "")}`}>
+                          {ticket.status || (ticket.dry_run ? "dry-run" : "new")}
+                        </span>
+                        <span className="font-mono text-slate-500">{ticket.ticket_id}</span>
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        <p className="text-xs text-slate-400">
+                          {ticket.payload?.short_description || ticket.payload?.summary || "Generated ticket payload"}
+                        </p>
+                        {ticket.url ? (
+                          <a
+                            href={ticket.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-indigo-400 hover:text-indigo-300"
+                          >
+                            Open in {platform === "jira" ? "Jira" : "ServiceNow"}
+                          </a>
+                        ) : null}
+                        {ticket.dry_run ? (
+                          <p className="text-xs text-amber-400">
+                            Dry-run preview only. Submit live tickets to push to {platform}.
+                          </p>
+                        ) : null}
+                        {ticket.metadata?.placeholder &&
+                        typeof (ticket.metadata?.synopsis as string | undefined) === "string" ? (
+                          <p className="text-xs text-slate-500">
+                            {(ticket.metadata.synopsis as string) ?? ""}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="mt-3 flex items-center justify-between text-[10px] text-slate-500">
+                        <span>Created: {toISO(ticket.created_at ?? undefined)}</span>
+                        {ticket.metadata?.linked_servicenow ? (
+                          <span>
+                            Linked INC:{" "}
+                            {(ticket.metadata.linked_servicenow as Record<string, string>)?.ticket_id ?? "unknown"}
+                          </span>
+                        ) : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
       <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-6 shadow-xl shadow-black/30 space-y-4">
         <h2 className="text-xl font-semibold text-white">File uploads</h2>
         <p className="text-sm text-slate-400">

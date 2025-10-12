@@ -17,6 +17,9 @@ class LLMProvider(str, Enum):
     OLLAMA = "ollama"
     OPENAI = "openai"
     BEDROCK = "bedrock"
+    ANTHROPIC = "anthropic"
+    VLLM = "vllm"
+    LMSTUDIO = "lmstudio"
 
 
 @dataclass

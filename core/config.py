@@ -113,6 +113,22 @@ class LLMSettings(BaseModel):
     BEDROCK_REGION: str = "us-east-1"
     BEDROCK_MODEL: str = "anthropic.claude-v2"
     BEDROCK_MAX_TOKENS: int = 4096
+    
+    # Anthropic Claude API (direct)
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-3-sonnet-20240229"
+    ANTHROPIC_MAX_TOKENS: int = 4096
+    
+    # vLLM
+    VLLM_BASE_URL: str = "http://localhost:8000"
+    VLLM_MODEL: str = "meta-llama/Llama-2-7b-chat-hf"
+    VLLM_API_KEY: Optional[str] = None
+    VLLM_MAX_TOKENS: int = 4096
+    
+    # LM Studio
+    LMSTUDIO_BASE_URL: str = "http://localhost:1234"
+    LMSTUDIO_MODEL: str = "local-model"
+    LMSTUDIO_MAX_TOKENS: int = 4096
 
     EMBEDDING_PROVIDER: str = "openai"
 
