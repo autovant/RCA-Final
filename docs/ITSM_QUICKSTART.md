@@ -277,13 +277,171 @@ npm install
 
 ## Next Steps
 
-✅ **You're ready to go!** Your ITSM integration is configured.
+## Step 7: Set Up Templates (Optional)
+
+Templates reduce manual data entry and ensure consistency across teams.
+
+### Create Template Configuration
+
+Edit `config/itsm_config.json` and add templates:
+
+```json
+{
+  "templates": {
+    "servicenow": [
+      {
+        "name": "production_incident",
+        "description": "Template for production incidents",
+        "required_variables": ["service_name", "error_message"],
+        "payload": {
+          "short_description": "Production Incident: {service_name}",
+          "description": "Error: {error_message}\n\nEnvironment: Production",
+          "priority": "1",
+          "state": "2",
+          "category": "Software",
+          "subcategory": "Application Error"
+        }
+      }
+    ],
+    "jira": [
+      {
+        "name": "bug_report",
+        "description": "Standard bug report template",
+        "required_variables": ["component", "bug_description"],
+        "payload": {
+          "issue_type": "Bug",
+          "summary": "Bug in {component}",
+          "description": "{bug_description}",
+          "priority": "High",
+          "labels": ["bug", "production"]
+        }
+      }
+    ]
+  }
+}
+```
+
+### List Available Templates
+
+```bash
+curl "http://localhost:8000/api/v1/tickets/templates?platform=servicenow"
+```
+
+Response:
+```json
+{
+  "templates": [
+    {
+      "name": "production_incident",
+      "platform": "servicenow",
+      "description": "Template for production incidents",
+      "required_variables": ["service_name", "error_message"],
+      "field_count": 6
+    }
+  ],
+  "count": 1
+}
+```
+
+### Create Ticket from Template
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/tickets/from-template" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_id": "job-456",
+    "platform": "servicenow",
+    "template_name": "production_incident",
+    "variables": {
+      "service_name": "Payment API",
+      "error_message": "Database connection pool exhausted"
+    },
+    "dry_run": false
+  }'
+```
+
+### Using Templates in UI
+
+1. Open Ticket Creation Form
+2. Check **"Use Template"** toggle
+3. Select template from dropdown
+4. Fill in required variables
+5. Click **Create Ticket**
+
+---
+
+## Step 8: Set Up Monitoring (Optional)
+
+Enable comprehensive monitoring with Prometheus metrics and Grafana dashboards.
+
+### Start Monitoring Stack
+
+```bash
+# Start Prometheus + Grafana
+docker-compose up -d prometheus grafana
+
+# Access Grafana
+open http://localhost:3000
+# Default: admin/admin
+```
+
+### Import ITSM Dashboard
+
+1. In Grafana, navigate to **Dashboards** > **Import**
+2. Upload file: `deploy/docker/config/grafana/dashboards/itsm_analytics.json`
+3. Select **Prometheus** as datasource
+4. Click **Import**
+
+The dashboard includes:
+- ✅ Ticket creation rate by platform
+- ✅ Duration percentiles (p50, p95, p99)
+- ✅ Error rate percentage with color thresholds
+- ✅ Retry attempts over time
+- ✅ Top validation errors
+- ✅ Template rendering errors
+- ✅ Operations summary with key metrics
+
+### View Metrics in Prometheus
+
+Access Prometheus UI: http://localhost:9090
+
+Example queries:
+```promql
+# Ticket creation rate
+rate(itsm_ticket_creation_total[5m])
+
+# Error rate percentage
+sum(rate(itsm_ticket_creation_total{outcome="failure"}[5m])) 
+  / sum(rate(itsm_ticket_creation_total[5m])) * 100
+
+# p95 latency
+histogram_quantile(0.95, 
+  rate(itsm_ticket_creation_duration_seconds_bucket[5m]))
+```
+
+### Configure Alerts
+
+Alerts are pre-configured in `deploy/docker/config/alert_rules.yml`:
+
+- **HighITSMErrorRate**: Error rate > 5% for 5 minutes
+- **CriticalITSMErrorRate**: Error rate > 25% for 2 minutes
+- **ExcessiveITSMRetries**: > 50 retries/min for 5 minutes
+- **ValidationFailureSpike**: > 10 validation errors/min
+- **TemplateRenderingFailures**: Any template errors
+- **SlowITSMTicketCreation**: p95 latency > 5 seconds
+- **NoITSMActivity**: No tickets for 30 minutes
+
+View alerts in Prometheus: http://localhost:9090/alerts
+
+---
+
+✅ **You're ready to go!** Your ITSM integration is fully configured with monitoring.
 
 **Explore more:**
 - Read full documentation: `docs/ITSM_INTEGRATION_GUIDE.md`
 - Customize field mappings: `config/itsm_config.json`
 - Set up webhooks for real-time updates
-- Create custom templates for common incident types
+- Review runbook: `docs/ITSM_RUNBOOK.md`
 - Integrate with alerting systems for automated ticket creation
 
 ## Quick Reference
@@ -295,6 +453,8 @@ npm install
 | `/api/v1/tickets/` | POST | Create single ticket |
 | `/api/v1/tickets/dispatch` | POST | Create tickets on all enabled platforms |
 | `/api/v1/tickets/{job_id}` | GET | List all tickets for job |
+| `/api/v1/tickets/templates` | GET | List available templates (optional: ?platform=) |
+| `/api/v1/tickets/from-template` | POST | Create ticket from template |
 | `/api/v1/tickets/settings/state` | GET | Get toggle state |
 | `/api/v1/tickets/settings/state` | PUT | Update toggles |
 

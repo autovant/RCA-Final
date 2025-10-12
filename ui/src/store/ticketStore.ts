@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Ticket, TicketToggleState } from '@/types/tickets';
+import { Ticket, TicketToggleState, TemplateMetadata, TicketPlatform } from '@/types/tickets';
 import ticketApi from '@/lib/api/tickets';
 import toast from 'react-hot-toast';
 
@@ -13,6 +13,11 @@ interface TicketStore {
   searchQuery: string;
   filterPlatform: 'all' | 'servicenow' | 'jira';
   filterStatus: 'all' | string;
+  
+  // Template state
+  templates: TemplateMetadata[];
+  selectedTemplate: TemplateMetadata | null;
+  templatesLoading: boolean;
 
   // Actions
   loadJobTickets: (jobId: string, refresh?: boolean) => Promise<void>;
@@ -24,6 +29,11 @@ interface TicketStore {
   setFilterStatus: (status: 'all' | string) => void;
   refreshTickets: (jobId: string) => Promise<void>;
   reset: () => void;
+  
+  // Template actions
+  fetchTemplates: (platform?: TicketPlatform) => Promise<void>;
+  selectTemplate: (template: TemplateMetadata | null) => void;
+  clearTemplate: () => void;
 }
 
 const initialState = {
@@ -35,6 +45,9 @@ const initialState = {
   searchQuery: '',
   filterPlatform: 'all' as const,
   filterStatus: 'all' as const,
+  templates: [],
+  selectedTemplate: null,
+  templatesLoading: false,
 };
 
 export const useTicketStore = create<TicketStore>((set, get) => ({
@@ -102,6 +115,31 @@ export const useTicketStore = create<TicketStore>((set, get) => ({
   },
 
   reset: () => set(initialState),
+  
+  // Template actions
+  fetchTemplates: async (platform?: TicketPlatform) => {
+    set({ templatesLoading: true });
+    try {
+      const response = await ticketApi.getTemplates(platform);
+      set({ 
+        templates: response.templates,
+        templatesLoading: false 
+      });
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to load templates';
+      console.error('Failed to load templates:', error);
+      set({ templatesLoading: false });
+      toast.error(errorMessage);
+    }
+  },
+
+  selectTemplate: (template: TemplateMetadata | null) => {
+    set({ selectedTemplate: template });
+  },
+
+  clearTemplate: () => {
+    set({ selectedTemplate: null });
+  },
 }));
 
 // Selector hooks for filtered tickets

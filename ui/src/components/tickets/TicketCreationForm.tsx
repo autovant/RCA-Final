@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Plus, Send, Eye, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Plus, Send, Eye, AlertCircle, FileText } from 'lucide-react';
 import ticketApi from '@/lib/api/tickets';
-import { TicketPlatform, ServiceNowPayload, JiraPayload } from '@/types/tickets';
+import { TicketPlatform, ServiceNowPayload, JiraPayload, TemplateMetadata } from '@/types/tickets';
 import toast from 'react-hot-toast';
 
 interface TicketCreationFormProps {
@@ -20,6 +20,13 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
   const [platform, setPlatform] = useState<TicketPlatform>('servicenow');
   const [dryRun, setDryRun] = useState(true);
   const [loading, setLoading] = useState(false);
+  
+  // Template state
+  const [templates, setTemplates] = useState<TemplateMetadata[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
+  const [templateVariables, setTemplateVariables] = useState<Record<string, any>>({});
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [useTemplate, setUseTemplate] = useState(false);
 
   // ServiceNow form fields
   const [snowFields, setSnowFields] = useState<ServiceNowPayload>({
@@ -46,13 +53,59 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
   });
 
   const [labelInput, setLabelInput] = useState('');
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+
+  // Load templates when platform changes
+  useEffect(() => {
+    const loadTemplates = async () => {
+      setTemplatesLoading(true);
+      try {
+        const response = await ticketApi.getTemplates(platform);
+        setTemplates(response.templates);
+      } catch (error) {
+        console.error('Failed to load templates:', error);
+      } finally {
+        setTemplatesLoading(false);
+      }
+    };
+
+    if (useTemplate) {
+      loadTemplates();
+    }
+  }, [platform, useTemplate]);
 
   const handleSnowFieldChange = (field: keyof ServiceNowPayload, value: string) => {
     setSnowFields((prev) => ({ ...prev, [field]: value }));
+    // Clear validation error for this field
+    if (validationErrors[field]) {
+      setValidationErrors((prev) => {
+        const newErrors = { ...prev };
+        delete newErrors[field];
+        return newErrors;
+      });
+    }
   };
 
   const handleJiraFieldChange = (field: keyof JiraPayload, value: any) => {
     setJiraFields((prev) => ({ ...prev, [field]: value }));
+    // Clear validation error for this field
+    if (validationErrors[field]) {
+      setValidationErrors((prev) => {
+        const newErrors = { ...prev };
+        delete newErrors[field];
+        return newErrors;
+      });
+    }
+  };
+
+  const handleTemplateChange = (templateName: string) => {
+    setSelectedTemplate(templateName);
+    setTemplateVariables({});
+    setValidationErrors({});
+  };
+
+  const handleTemplateVariableChange = (varName: string, value: string) => {
+    setTemplateVariables((prev) => ({ ...prev, [varName]: value }));
   };
 
   const handleAddLabel = () => {
@@ -75,16 +128,29 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setValidationErrors({});
 
     try {
-      const payload = platform === 'servicenow' ? snowFields : jiraFields;
-      
-      await ticketApi.createTicket({
-        job_id: jobId,
-        platform,
-        payload,
-        dry_run: dryRun,
-      });
+      if (useTemplate && selectedTemplate) {
+        // Create from template
+        await ticketApi.createFromTemplate({
+          job_id: jobId,
+          platform,
+          template_name: selectedTemplate,
+          variables: templateVariables,
+          dry_run: dryRun,
+        });
+      } else {
+        // Create from manual form
+        const payload = platform === 'servicenow' ? snowFields : jiraFields;
+        
+        await ticketApi.createTicket({
+          job_id: jobId,
+          platform,
+          payload,
+          dry_run: dryRun,
+        });
+      }
 
       toast.success(
         dryRun
@@ -95,6 +161,16 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
       onSuccess?.();
     } catch (error: any) {
       const errorMessage = error.response?.data?.detail || error.message || 'Failed to create ticket';
+      
+      // Extract validation errors if present
+      if (error.response?.data?.validation_errors) {
+        const errors: Record<string, string> = {};
+        error.response.data.validation_errors.forEach((err: any) => {
+          errors[err.field] = err.message;
+        });
+        setValidationErrors(errors);
+      }
+      
       toast.error(errorMessage);
     } finally {
       setLoading(false);
@@ -154,6 +230,103 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
           </div>
         </div>
 
+        {/* Template Toggle */}
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+          <label className="flex items-center justify-between cursor-pointer">
+            <div className="flex items-center gap-3">
+              <FileText className="w-5 h-5 text-indigo-600" />
+              <div>
+                <span className="block text-sm font-medium text-indigo-900">Use Template</span>
+                <span className="block text-xs text-indigo-700 mt-0.5">
+                  Create ticket from a pre-configured template with variable substitution
+                </span>
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={useTemplate}
+              onChange={(e) => setUseTemplate(e.target.checked)}
+              className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500"
+            />
+          </label>
+        </div>
+
+        {/* Template Selection */}
+        {useTemplate && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Select Template <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={selectedTemplate}
+                onChange={(e) => handleTemplateChange(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                required={useTemplate}
+                disabled={templatesLoading}
+              >
+                <option value="">
+                  {templatesLoading ? 'Loading templates...' : '-- Select a template --'}
+                </option>
+                {templates.map((template) => (
+                  <option key={template.name} value={template.name}>
+                    {template.name} ({template.field_count} fields)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Template Variables */}
+            {selectedTemplate && templates.find((t) => t.name === selectedTemplate) && (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-gray-900 mb-3">Template Variables</h4>
+                {(() => {
+                  const template = templates.find((t) => t.name === selectedTemplate);
+                  if (!template || template.required_variables.length === 0) {
+                    return (
+                      <p className="text-sm text-gray-600">This template has no required variables.</p>
+                    );
+                  }
+                  return (
+                    <div className="space-y-3">
+                      {template.required_variables.map((varName) => (
+                        <div key={varName}>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            {varName} <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={templateVariables[varName] || ''}
+                            onChange={(e) => handleTemplateVariableChange(varName, e.target.value)}
+                            className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 ${
+                              validationErrors[varName]
+                                ? 'border-red-300 focus:ring-red-500'
+                                : 'border-gray-300 focus:ring-indigo-500'
+                            }`}
+                            placeholder={`Enter ${varName}`}
+                            required
+                          />
+                          {validationErrors[varName] && (
+                            <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                              <AlertCircle className="w-4 h-4" />
+                              {validationErrors[varName]}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                      {template.description && (
+                        <div className="mt-4 pt-4 border-t border-gray-200">
+                          <p className="text-sm text-gray-600">{template.description}</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Dry Run Toggle */}
         <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
           <label className="flex items-center justify-between cursor-pointer">
@@ -176,7 +349,7 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
         </div>
 
         {/* ServiceNow Fields */}
-        {platform === 'servicenow' && (
+        {!useTemplate && platform === 'servicenow' && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="md:col-span-2">
@@ -187,10 +360,20 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
                   type="text"
                   value={snowFields.short_description}
                   onChange={(e) => handleSnowFieldChange('short_description', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 ${
+                    validationErrors.short_description
+                      ? 'border-red-300 focus:ring-red-500'
+                      : 'border-gray-300 focus:ring-emerald-500'
+                  }`}
                   placeholder="Brief summary of the incident"
                   required
                 />
+                {validationErrors.short_description && (
+                  <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" />
+                    {validationErrors.short_description}
+                  </p>
+                )}
               </div>
 
               <div className="md:col-span-2">
@@ -293,7 +476,7 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
         )}
 
         {/* Jira Fields */}
-        {platform === 'jira' && (
+        {!useTemplate && platform === 'jira' && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -304,10 +487,20 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
                   type="text"
                   value={jiraFields.project_key}
                   onChange={(e) => handleJiraFieldChange('project_key', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 ${
+                    validationErrors.project_key
+                      ? 'border-red-300 focus:ring-red-500'
+                      : 'border-gray-300 focus:ring-blue-500'
+                  }`}
                   placeholder="e.g., PROJ"
                   required
                 />
+                {validationErrors.project_key && (
+                  <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" />
+                    {validationErrors.project_key}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -332,10 +525,20 @@ export const TicketCreationForm: React.FC<TicketCreationFormProps> = ({
                   type="text"
                   value={jiraFields.summary}
                   onChange={(e) => handleJiraFieldChange('summary', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 ${
+                    validationErrors.summary
+                      ? 'border-red-300 focus:ring-red-500'
+                      : 'border-gray-300 focus:ring-blue-500'
+                  }`}
                   placeholder="Brief issue summary"
                   required
                 />
+                {validationErrors.summary && (
+                  <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" />
+                    {validationErrors.summary}
+                  </p>
+                )}
               </div>
 
               <div className="md:col-span-2">

@@ -367,6 +367,12 @@ class Ticket(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # SLA tracking fields
+    acknowledged_at = Column(DateTime(timezone=True))
+    resolved_at = Column(DateTime(timezone=True))
+    time_to_acknowledge = Column(Integer)  # seconds from created_at to acknowledged_at
+    time_to_resolve = Column(Integer)  # seconds from created_at to resolved_at
 
     def __init__(self, *args, **kwargs):
         metadata = kwargs.pop("metadata", None)
@@ -399,6 +405,10 @@ class Ticket(Base):
             "metadata": self.metadata,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "acknowledged_at": self.acknowledged_at.isoformat() if self.acknowledged_at else None,
+            "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
+            "time_to_acknowledge": self.time_to_acknowledge,
+            "time_to_resolve": self.time_to_resolve,
         }
 
 

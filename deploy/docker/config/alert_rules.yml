@@ -81,3 +81,101 @@ groups:
         annotations:
           summary: "Low disk space"
           description: "Less than 10% disk space available"
+
+  # ITSM Integration Alerts
+  - name: itsm_integration_alerts
+    interval: 30s
+    rules:
+      # High ITSM error rate
+      - alert: HighITSMErrorRate
+        expr: |
+          (
+            sum(rate(itsm_ticket_creation_total{outcome="failure"}[5m])) 
+            / 
+            (sum(rate(itsm_ticket_creation_total[5m])) + 0.001)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: itsm
+        annotations:
+          summary: "High ITSM ticket creation error rate"
+          description: "ITSM error rate is {{ $value | humanizePercentage }} over the last 5 minutes (threshold: 5%)"
+          runbook: "Check ITSM platform status, review error logs, verify credentials and network connectivity"
+
+      # Critical ITSM error rate
+      - alert: CriticalITSMErrorRate
+        expr: |
+          (
+            sum(rate(itsm_ticket_creation_total{outcome="failure"}[5m])) 
+            / 
+            (sum(rate(itsm_ticket_creation_total[5m])) + 0.001)
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          component: itsm
+        annotations:
+          summary: "Critical ITSM ticket creation error rate"
+          description: "ITSM error rate is {{ $value | humanizePercentage }} over the last 2 minutes (threshold: 25%)"
+          runbook: "IMMEDIATE ACTION REQUIRED: ITSM integration is failing. Check platform health, verify authentication, review recent configuration changes"
+
+      # Excessive retry attempts
+      - alert: ExcessiveITSMRetries
+        expr: rate(itsm_ticket_retry_attempts_total[5m]) > 0.83
+        for: 5m
+        labels:
+          severity: warning
+          component: itsm
+        annotations:
+          summary: "Excessive ITSM retry attempts detected"
+          description: "ITSM retry rate is {{ $value | humanize }} retries/sec (>50/min) for platform {{ $labels.platform }}"
+          runbook: "ITSM platform may be degraded. Check ServiceNow/Jira status page, review retry_policy configuration, investigate transient errors"
+
+      # Validation failure spike
+      - alert: ValidationFailureSpike
+        expr: rate(itsm_validation_errors_total[5m]) > 0.167
+        for: 3m
+        labels:
+          severity: warning
+          component: itsm
+        annotations:
+          summary: "ITSM payload validation failure spike"
+          description: "Validation error rate is {{ $value | humanize }} errors/sec (>10/min) for platform {{ $labels.platform }}, field {{ $labels.field }}"
+          runbook: "Review recent code changes, check field_mapping configuration in itsm_config.json, verify payload structure matches ITSM schema"
+
+      # Template rendering failures
+      - alert: TemplateRenderingFailures
+        expr: increase(itsm_template_rendering_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: itsm
+        annotations:
+          summary: "ITSM template rendering failures detected"
+          description: "Template {{ $labels.template_name }} failed to render {{ $value }} times in the last 5 minutes"
+          runbook: "Check template syntax in itsm_config.json, verify required variables are provided, review template_service logs"
+
+      # Slow ITSM ticket creation
+      - alert: SlowITSMTicketCreation
+        expr: histogram_quantile(0.95, rate(itsm_ticket_creation_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: itsm
+        annotations:
+          summary: "Slow ITSM ticket creation performance"
+          description: "95th percentile ticket creation duration is {{ $value | humanizeDuration }} for platform {{ $labels.platform }} (threshold: 5s)"
+          runbook: "Check ITSM platform response times, review network latency, consider increasing timeout configuration"
+
+      # No ITSM ticket creation activity
+      - alert: NoITSMActivity
+        expr: rate(itsm_ticket_creation_total[15m]) == 0
+        for: 30m
+        labels:
+          severity: info
+          component: itsm
+        annotations:
+          summary: "No ITSM ticket creation activity"
+          description: "No tickets have been created for platform {{ $labels.platform }} in the last 30 minutes"
+          runbook: "This may be expected during low activity periods. Verify jobs are running and feature toggles are enabled"

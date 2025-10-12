@@ -112,3 +112,30 @@ export interface JiraPayload {
   issue_links?: any[];
   [key: string]: any;
 }
+
+// Template-related types
+export interface TemplateMetadata {
+  name: string;
+  platform: TicketPlatform;
+  description?: string;
+  required_variables: string[];
+  field_count: number;
+}
+
+export interface TemplateListResponse {
+  templates: TemplateMetadata[];
+  count: number;
+}
+
+export interface CreateFromTemplateRequest {
+  job_id: string;
+  platform: TicketPlatform;
+  template_name: string;
+  variables?: Record<string, any>;
+  profile_name?: string;
+  dry_run?: boolean;
+}
+
+export interface CreateFromTemplateResponse extends Ticket {
+  template_name: string;
+}
