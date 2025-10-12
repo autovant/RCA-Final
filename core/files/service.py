@@ -131,6 +131,7 @@ class FileService:
 
         hasher = hashlib.sha256()
         bytes_written = 0
+        write_error = False
 
         try:
             async with aiofiles.open(dest_path, "wb") as buffer:
@@ -143,14 +144,21 @@ class FileService:
                     await buffer.write(chunk)
                     if bytes_written > self._max_bytes:
                         break
+        except Exception:
+            write_error = True
+            raise
         finally:
             await upload.seek(0)
+            if write_error:
+                # Clean up partially written file if there was an error
+                await self._delete_path(dest_path)
 
         logger.debug(
             "Persisted upload to %s (%d bytes)", dest_path, bytes_written
         )
         checksum = hasher.hexdigest()
         return dest_path, bytes_written, checksum
+
 
     async def _enforce_scan(self, path: Path) -> None:
         """Run a lightweight content validation scan on the stored file."""
@@ -184,3 +192,10 @@ class FileService:
 
 
 __all__ = ["FileService"]
+
+def _sanitise_filename(filename: str) -> str:
+    # Extract just the filename, removing any path components (handle both / and \)
+    name = Path(filename).name or "upload"
+    # Replace unsafe characters
+    safe = _SAFE_FILENAME_RE.sub("_", name)
+    return safe.strip("._") or "upload"

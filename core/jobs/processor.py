@@ -10,7 +10,7 @@ import html
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import aiofiles
@@ -27,6 +27,7 @@ from core.logging import get_logger
 from core.privacy import PiiRedactor, RedactionResult
 
 logger = get_logger(__name__)
+
 
 
 @dataclass
@@ -145,12 +146,13 @@ class JobProcessor:
         return {
             "job_id": str(job.id),
             "analysis_type": "rca_analysis",
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "metrics": aggregate_metrics,
             "files": [asdict(summary) for summary in file_summaries],
             "llm": llm_output,
             "outputs": outputs,
         }
+
 
     async def process_log_analysis(self, job: Job) -> Dict[str, Any]:
         """Alias for log-specific analysis (shares pipeline with RCA)."""
@@ -222,13 +224,14 @@ class JobProcessor:
         return {
             "job_id": str(job.id),
             "analysis_type": "log_analysis",
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "metrics": aggregate_metrics,
             "files": [asdict(summary) for summary in file_summaries],
             "suspected_error_logs": suspected_error_logs,
             "llm": llm_output,
             "outputs": outputs,
         }
+
 
     async def process_embedding_generation(self, job: Job) -> Dict[str, Any]:
         """
@@ -275,9 +278,10 @@ class JobProcessor:
         return {
             "job_id": str(job.id),
             "analysis_type": "embedding_generation",
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "document_count": len(documents),
         }
+
 
     def _render_outputs(
         self,
@@ -303,7 +307,7 @@ class JobProcessor:
         structured_json = {
             "job_id": str(job.id),
             "analysis_type": mode,
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "severity": severity,
             "categories": categories,
             "tags": tags,
@@ -314,6 +318,7 @@ class JobProcessor:
             "recommended_actions": recommended_actions,
             "ticketing": job.ticketing or {},
         }
+
 
         return {"markdown": markdown, "html": html_output, "json": structured_json}
 
@@ -575,9 +580,10 @@ class JobProcessor:
             }
         file_record.metadata = metadata
         file_record.processed = True
-        file_record.processed_at = datetime.utcnow()
+        file_record.processed_at = datetime.now(timezone.utc)
         await session.flush()
         return summary, len(chunks)
+
 
     async def _run_llm_analysis(
         self,

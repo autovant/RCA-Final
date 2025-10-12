@@ -4,8 +4,8 @@ RCA Engine - Unified API Application
 Main FastAPI application entry point for the unified RCA engine.
 """
 
-import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -141,7 +141,7 @@ async def status():
     """Detailed status endpoint."""
     return {
         "status": "healthy",
-        "timestamp": asyncio.get_event_loop().time(),
+        "timestamp": time.time(),
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
         "features": {

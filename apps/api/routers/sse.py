@@ -8,7 +8,7 @@ import contextlib
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, status
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 job_service = JobService()
+
 
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
 
@@ -49,10 +50,11 @@ async def _event_stream(job_id: str) -> AsyncGenerator[Dict[str, str], None]:
             job = await job_service.get_job(job_id)
             data = {
                 "job_id": job_id,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "status": getattr(job, "status", None),
             }
             await queue.put(("heartbeat", data))
+
 
             if job and job.status in TERMINAL_STATES:
                 await queue.put(

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -18,6 +18,7 @@ from core.watchers import WatcherService, watcher_event_bus
 
 router = APIRouter()
 watcher_service = WatcherService()
+
 
 
 class WatcherConfigModel(BaseModel):
@@ -104,7 +105,7 @@ async def _watcher_event_stream(history: int):
                     {
                         "event_type": "error",
                         "error": str(exc),
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             )
@@ -116,9 +117,10 @@ async def _watcher_event_stream(history: int):
         while not stop_event.is_set():
             await asyncio.sleep(15)
             heartbeat = {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             await queue.put(("heartbeat", heartbeat))
+
 
     forward_task = asyncio.create_task(_forward_events())
     heartbeat_task = asyncio.create_task(_emit_heartbeats())

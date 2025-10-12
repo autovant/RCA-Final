@@ -3,7 +3,7 @@ Authentication and authorization module for RCA Engine.
 Provides JWT token management and user authentication.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -17,6 +17,7 @@ from core.db.database import get_db
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -71,7 +72,7 @@ class AuthService:
             str: Encoded JWT token
         """
         to_encode = data.copy()
-        expire = datetime.utcnow() + (
+        expire = datetime.now(timezone.utc) + (
             expires_delta
             if expires_delta
             else timedelta(minutes=settings.security.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -83,7 +84,7 @@ class AuthService:
         to_encode.update(
             {
                 "exp": expire,
-                "iat": datetime.utcnow(),
+                "iat": datetime.now(timezone.utc),
                 "iss": settings.security.JWT_ISSUER,
                 "aud": settings.security.JWT_AUDIENCE,
                 "type": "access",
@@ -97,6 +98,7 @@ class AuthService:
         )
         
         return encoded_jwt
+
     
     @staticmethod
     def create_refresh_token(data: Dict[str, Any]) -> str:
@@ -110,14 +112,14 @@ class AuthService:
             str: Encoded JWT refresh token
         """
         to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(
+        expire = datetime.now(timezone.utc) + timedelta(
             days=settings.security.JWT_REFRESH_TOKEN_EXPIRE_DAYS
         )
         
         to_encode.update(
             {
                 "exp": expire,
-                "iat": datetime.utcnow(),
+                "iat": datetime.now(timezone.utc),
                 "iss": settings.security.JWT_ISSUER,
                 "aud": settings.security.JWT_AUDIENCE,
                 "type": "refresh",
@@ -131,6 +133,7 @@ class AuthService:
         )
         
         return encoded_jwt
+
     
     @staticmethod
     def decode_token(token: str) -> Dict[str, Any]:

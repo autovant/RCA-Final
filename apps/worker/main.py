@@ -8,6 +8,7 @@ import logging
 import signal
 import sys
 from typing import Optional
+from uuid import uuid4
 
 from core.config import settings
 from core.db.database import init_db, close_db
@@ -28,7 +29,8 @@ class Worker:
         self.running = True
         self.job_service = JobService()
         self.job_processor = JobProcessor(self.job_service)
-        self.worker_id = f"worker_{asyncio.get_event_loop().time()}"
+        # Generate a stable identifier without relying on a running event loop
+        self.worker_id = f"worker_{uuid4().hex}"
         
     async def start(self):
         """Start the worker."""

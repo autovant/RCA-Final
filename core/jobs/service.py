@@ -5,7 +5,7 @@ Business logic for job processing, state management, and event tracking.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, func, or_, select, update
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class JobService:
+
     """Service for managing RCA analysis jobs."""
     
     def __init__(self):
@@ -215,13 +216,12 @@ class JobService:
                     .limit(1)
                     .with_for_update(skip_locked=True)
                 )
-
                 job = result.scalar_one_or_none()
 
                 if job:
                     job.status = "running"
-                    job.started_at = datetime.utcnow()
-                    job.updated_at = datetime.utcnow()
+                    job.started_at = datetime.now(timezone.utc)
+                    job.updated_at = datetime.now(timezone.utc)
 
                     await self.create_job_event(
                         job.id,
@@ -236,6 +236,8 @@ class JobService:
                 logger.info("Acquired job for processing: %s", job.id)
 
             return job
+
+            return job
     
     async def update_job_status(self, job_id: str, status: str, data: Optional[Dict] = None):
         """Update job status."""
@@ -245,17 +247,16 @@ class JobService:
                     select(Job).where(Job.id == job_id)
                 )
                 job = result.scalar_one_or_none()
-
                 if not job:
                     return
 
                 job.status = status
-                job.updated_at = datetime.utcnow()
+                job.updated_at = datetime.now(timezone.utc)
 
                 if status == "running" and not job.started_at:
-                    job.started_at = datetime.utcnow()
+                    job.started_at = datetime.now(timezone.utc)
                 elif status in ["completed", "failed", "cancelled"] and not job.completed_at:
-                    job.completed_at = datetime.utcnow()
+                    job.completed_at = datetime.now(timezone.utc)
 
                 event_data = {"status": status}
                 if data:
@@ -270,6 +271,8 @@ class JobService:
 
             await self._publish_session_events(session)
             logger.info("Updated job %s status to %s", job_id, status)
+
+            logger.info("Updated job %s status to %s", job_id, status)
     
     async def complete_job(self, job_id: str, result_data: Dict[str, Any]):
         """Mark job as completed."""
@@ -278,8 +281,6 @@ class JobService:
                 result = await session.execute(
                     select(Job).where(Job.id == job_id)
                 )
-                job = result.scalar_one_or_none()
-
                 if not job:
                     return
 
@@ -288,8 +289,8 @@ class JobService:
                 job.outputs = result_data.get("outputs") or {}
                 if "ticketing" in result_data and result_data["ticketing"]:
                     job.ticketing = result_data["ticketing"]
-                job.completed_at = datetime.utcnow()
-                job.updated_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc)
+                job.updated_at = datetime.now(timezone.utc)
 
                 await self.create_job_event(
                     job_id,
@@ -297,6 +298,8 @@ class JobService:
                     {"result": result_data},
                     session=session
                 )
+
+            await self._publish_session_events(session)
 
             await self._publish_session_events(session)
             logger.info("Completed job: %s", job_id)
@@ -315,8 +318,8 @@ class JobService:
 
                 job.status = "failed"
                 job.error_message = error_message
-                job.completed_at = datetime.utcnow()
-                job.updated_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc)
+                job.updated_at = datetime.now(timezone.utc)
                 job.retry_count += 1
 
                 await self.create_job_event(
@@ -328,6 +331,7 @@ class JobService:
 
             await self._publish_session_events(session)
             logger.error("Failed job: %s, error: %s", job_id, error_message)
+
 
     async def cancel_job(self, job_id: str, reason: str = "User cancelled"):
         """Cancel a job."""
@@ -343,8 +347,8 @@ class JobService:
 
                 job.status = "cancelled"
                 job.error_message = reason
-                job.completed_at = datetime.utcnow()
-                job.updated_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc)
+                job.updated_at = datetime.now(timezone.utc)
 
                 await self.create_job_event(
                     job_id,
@@ -355,6 +359,7 @@ class JobService:
 
             await self._publish_session_events(session)
             logger.info("Cancelled job: %s, reason: %s", job_id, reason)
+
     
     async def create_job_event(
         self,
@@ -487,7 +492,7 @@ class JobService:
     
     async def cleanup_old_jobs(self, days: int = 30):
         """Clean up old completed jobs."""
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
         async with self._session_factory() as session:
             # Delete old completed jobs
