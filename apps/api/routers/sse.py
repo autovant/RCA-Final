@@ -4,18 +4,16 @@ Server Sent Event helpers for streaming job updates.
 
 from __future__ import annotations
 
-import contextlib
 import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Dict, Optional, Tuple
+from typing import AsyncGenerator, Dict
 
 from fastapi import APIRouter, HTTPException, status
-from starlette.responses import EventSourceResponse
+from sse_starlette.sse import EventSourceResponse
 
 from core.jobs.service import JobService
-from core.jobs.event_bus import job_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -24,94 +22,101 @@ job_service = JobService()
 
 
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
+JOB_EVENT_STREAM_NAME = "job-event"
 
 
 async def _event_stream(job_id: str) -> AsyncGenerator[Dict[str, str], None]:
-    """Yield SSE payloads backed by the in-process/Redis event bus."""
-
-    queue: asyncio.Queue[Tuple[str, Dict[str, Any]]] = asyncio.Queue()
-    stop_event = asyncio.Event()
-
-    async def _forward_events() -> None:
-        try:
-            async for payload in job_event_bus.subscribe(job_id):
-                await queue.put(("event", payload))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # pragma: no cover - transport issues
-            logger.warning("SSE subscription lost for job %s: %s", job_id, exc)
-        finally:
-            await queue.put(("closed", {}))
-            stop_event.set()
-
-    async def _emit_heartbeats() -> None:
-        while not stop_event.is_set():
-            await asyncio.sleep(15)
-            job = await job_service.get_job(job_id)
-            data = {
-                "job_id": job_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "status": getattr(job, "status", None),
-            }
-            await queue.put(("heartbeat", data))
-
-
-            if job and job.status in TERMINAL_STATES:
-                await queue.put(
-                    (
-                        "event",
-                        {
-                            "event_type": "complete",
-                            "job_id": job_id,
-                            "status": job.status,
-                        },
-                    )
-                )
-                stop_event.set()
-                await queue.put(("closed", {}))
-                break
-
-    consumer_task = asyncio.create_task(_forward_events())
-    heartbeat_task = asyncio.create_task(_emit_heartbeats())
-
+    """Yield SSE payloads by polling the database for new events.
+    
+    This simple polling approach works reliably across processes without Redis.
+    """
     try:
-        historical = await job_service.get_job_events(job_id, limit=50)
+        # Track last seen timestamp to identify new events
+        last_seen_at = None
+        
+        # Send historical events first
+        historical = await job_service.get_job_events(job_id, limit=100)
         for event in reversed(historical):
             payload = event.to_dict()
             yield {
-                "event": payload.get("event_type", "message"),
+                "event": JOB_EVENT_STREAM_NAME,
                 "data": json.dumps(payload),
             }
+            # Track the latest timestamp we've sent
+            created_at = getattr(event, 'created_at', None)
+            if created_at is not None:
+                if last_seen_at is None or created_at > last_seen_at:
+                    last_seen_at = created_at
 
+        # Poll for new events until job reaches terminal state
+        poll_interval = 1.0  # Poll every 1 second for new events
+        heartbeat_counter = 0
+        
         while True:
-            kind, payload = await queue.get()
-
-            if kind == "event":
-                event_type = payload.get("event_type", "message")
-                yield {
-                    "event": event_type,
-                    "data": json.dumps(payload),
+            await asyncio.sleep(poll_interval)
+            heartbeat_counter += 1
+            
+            # Check job status
+            job = await job_service.get_job(job_id)
+            
+            # Send heartbeat every 15 seconds
+            if heartbeat_counter >= 15:
+                heartbeat_counter = 0
+                data = {
+                    "job_id": job_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "status": getattr(job, "status", None),
                 }
-
-                if event_type in TERMINAL_STATES or payload.get("status") in TERMINAL_STATES:
-                    stop_event.set()
-
-            elif kind == "heartbeat":
                 yield {
                     "event": "heartbeat",
+                    "data": json.dumps(data),
+                }
+            
+            # Fetch new events since last check
+            all_events = await job_service.get_job_events(job_id, limit=100)
+            logger.info(f"[SSE {job_id}] Fetched {len(all_events)} total events, last_seen_at={last_seen_at}")
+            new_events = []
+            for e in all_events:
+                created_at = getattr(e, 'created_at', None)
+                if created_at is not None:
+                    is_new = last_seen_at is None or created_at > last_seen_at
+                    logger.debug(f"[SSE {job_id}] Event {e.event_type} @ {created_at} - is_new={is_new}")
+                    if is_new:
+                        new_events.append(e)
+            
+            # Send new events (oldest first)
+            if new_events:
+                logger.info(f"[SSE {job_id}] Sending {len(new_events)} new events")
+            for event in reversed(new_events):
+                payload = event.to_dict()
+                yield {
+                    "event": JOB_EVENT_STREAM_NAME,
                     "data": json.dumps(payload),
                 }
-
-            elif kind == "closed":
+                created_at = getattr(event, 'created_at', None)
+                if created_at is not None:
+                    if last_seen_at is None or created_at > last_seen_at:
+                        last_seen_at = created_at
+            
+            # Stop polling if job is in terminal state
+            if job and job.status in TERMINAL_STATES:
+                # Send final completion event
+                yield {
+                    "event": JOB_EVENT_STREAM_NAME,
+                    "data": json.dumps({
+                        "event_type": "complete",
+                        "job_id": job_id,
+                        "status": job.status,
+                    }),
+                }
                 break
-    finally:
-        stop_event.set()
-        consumer_task.cancel()
-        heartbeat_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await consumer_task
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat_task
+    except Exception as exc:
+        logger.error(f"Error in SSE stream for job {job_id}: {exc}", exc_info=True)
+        # Yield error event before closing
+        yield {
+            "event": "error",
+            "data": json.dumps({"error": str(exc)}),
+        }
 
 
 @router.get("/jobs/{job_id}")

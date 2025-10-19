@@ -4,10 +4,12 @@ Service helpers for ITSM ticket orchestration and persistence.
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from prometheus_client import Counter, Histogram
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,8 +27,50 @@ from core.tickets.clients import (
     TicketCreationResult,
 )
 from core.tickets.settings import TicketSettingsService, TicketToggleState
+from core.tickets.template_service import TicketTemplateService, TemplateRenderError
+from core.tickets.validation import validate_ticket_payload, ValidationResult
 
 logger = get_logger(__name__)
+
+# Prometheus metrics for ITSM operations
+itsm_ticket_creation_total = Counter(
+    'itsm_ticket_creation_total',
+    'Total number of ITSM ticket creation attempts',
+    ['platform', 'outcome']
+)
+
+itsm_ticket_creation_duration_seconds = Histogram(
+    'itsm_ticket_creation_duration_seconds',
+    'Duration of ITSM ticket creation operations',
+    ['platform', 'outcome'],
+    buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
+)
+
+itsm_validation_errors_total = Counter(
+    'itsm_validation_errors_total',
+    'Total number of ITSM payload validation errors',
+    ['platform', 'field']
+)
+
+itsm_template_rendering_errors_total = Counter(
+    'itsm_template_rendering_errors_total',
+    'Total number of ITSM template rendering errors',
+    ['template_name']
+)
+
+itsm_ticket_time_to_acknowledge_seconds = Histogram(
+    'itsm_ticket_time_to_acknowledge_seconds',
+    'Time from ticket creation to acknowledgement',
+    ['platform'],
+    buckets=[60, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]  # 1m to 1d
+)
+
+itsm_ticket_time_to_resolve_seconds = Histogram(
+    'itsm_ticket_time_to_resolve_seconds',
+    'Time from ticket creation to resolution',
+    ['platform'],
+    buckets=[300, 1800, 3600, 7200, 14400, 28800, 86400, 172800, 604800]  # 5m to 1w
+)
 
 
 def _utcnow() -> datetime:
@@ -45,6 +89,7 @@ class TicketService:
         self._session_factory = get_db_session()
         self._job_service = JobService()
         self._settings_service = TicketSettingsService()
+        self._template_service = TicketTemplateService()
 
         ticketing = settings.ticketing
         self._servicenow_client: Optional[ServiceNowClient] = None
@@ -287,6 +332,10 @@ class TicketService:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Ticket:
         """Create or persist a ticket record for the supplied platform."""
+        # Start timing for metrics
+        start_time = time.time()
+        outcome = "success"
+        
         overrides = payload or {}
         metadata = metadata or {}
 
@@ -294,6 +343,27 @@ class TicketService:
         platform_enabled = platform in toggles.active_platforms
 
         prepared_payload = await self._prepare_payload(job_id, platform, overrides)
+
+        # Validate payload before attempting creation
+        validation_result = validate_ticket_payload(platform, prepared_payload)
+        if not validation_result.valid:
+            # Store validation errors in metadata
+            metadata["validation_errors"] = validation_result.error_dict()
+            logger.warning(
+                f"Ticket validation failed for job {job_id} on platform {platform}: {len(validation_result.errors)} errors"
+            )
+            
+            # Increment validation error metrics
+            for error in validation_result.errors:
+                itsm_validation_errors_total.labels(
+                    platform=platform,
+                    field=error.field
+                ).inc()
+            
+            # Optionally, you can choose to proceed with dry-run or raise an error
+            # For now, we'll force dry-run mode if validation fails
+            dry_run = True
+            metadata["validation_failed"] = True
         final_ticket_id = ticket_id or f"{platform}-{uuid.uuid4().hex[:8]}"
         final_url = url
         status = "dry-run"
@@ -313,6 +383,7 @@ class TicketService:
                 metadata["error"] = str(exc)
                 actual_dry_run = True
                 result = None
+                outcome = "failure"
             else:
                 final_ticket_id = result.ticket_id
                 final_url = result.url or final_url
@@ -328,29 +399,54 @@ class TicketService:
         if actual_dry_run:
             status = "dry-run"
 
-        async with self._session_factory() as session:
-            async with session.begin():
-                record = await self._persist_ticket(
-                    session,
-                    job_id=job_id,
-                    platform=platform,
-                    ticket_id=final_ticket_id,
-                    url=final_url,
-                    status=status,
-                    dry_run=actual_dry_run,
-                    profile_name=profile_name,
-                    payload=prepared_payload,
-                    metadata=metadata,
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    record = await self._persist_ticket(
+                        session,
+                        job_id=job_id,
+                        platform=platform,
+                        ticket_id=final_ticket_id,
+                        url=final_url,
+                        status=status,
+                        dry_run=actual_dry_run,
+                        profile_name=profile_name,
+                        payload=prepared_payload,
+                        metadata=metadata,
+                    )
+                await self._job_service.publish_session_events(session)
+                logger.info(
+                    "Ticket %s recorded for job %s on platform %s (dry_run=%s)",
+                    final_ticket_id,
+                    job_id,
+                    platform,
+                    actual_dry_run,
                 )
-            await self._job_service.publish_session_events(session)
-            logger.info(
-                "Ticket %s recorded for job %s on platform %s (dry_run=%s)",
-                final_ticket_id,
-                job_id,
-                platform,
-                actual_dry_run,
-            )
-            return record
+                
+                # Record metrics
+                duration = time.time() - start_time
+                itsm_ticket_creation_total.labels(
+                    platform=platform,
+                    outcome=outcome
+                ).inc()
+                itsm_ticket_creation_duration_seconds.labels(
+                    platform=platform,
+                    outcome=outcome
+                ).observe(duration)
+                
+                return record
+        except Exception as e:
+            # Record failure metrics
+            duration = time.time() - start_time
+            itsm_ticket_creation_total.labels(
+                platform=platform,
+                outcome="failure"
+            ).inc()
+            itsm_ticket_creation_duration_seconds.labels(
+                platform=platform,
+                outcome="failure"
+            ).observe(duration)
+            raise
 
     async def create_enabled_tickets(
         self,
@@ -438,7 +534,7 @@ class TicketService:
         return tickets
 
     async def _refresh_ticket_batch(self, tickets: Iterable[Ticket]) -> None:
-        updates: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+        updates: List[Tuple[str, Dict[str, Any], Dict[str, Any], Dict[str, Any]]] = []
 
         for ticket in tickets:
             if ticket.dry_run:
@@ -463,30 +559,146 @@ class TicketService:
                 fields = latest.get("fields") or {}
                 status = fields.get("status", {}).get("name")
 
+            # Compute SLA metrics based on status transitions
+            sla_updates = {}
+            new_status = status or ticket.status
+            now = _utcnow()
+            
+            # Track acknowledgement (transition to "In Progress" or similar)
+            if new_status in ("In Progress", "In_Progress", "Assigned", "Acknowledged") and not ticket.acknowledged_at:
+                sla_updates["acknowledged_at"] = now
+                if ticket.created_at:
+                    time_to_ack = int((now - ticket.created_at).total_seconds())
+                    sla_updates["time_to_acknowledge"] = time_to_ack
+                    # Record SLA metric
+                    itsm_ticket_time_to_acknowledge_seconds.labels(platform=ticket.platform).observe(time_to_ack)
+            
+            # Track resolution (transition to "Resolved", "Closed", etc.)
+            if new_status in ("Resolved", "Closed", "Done", "Completed") and not ticket.resolved_at:
+                sla_updates["resolved_at"] = now
+                if ticket.created_at:
+                    time_to_res = int((now - ticket.created_at).total_seconds())
+                    sla_updates["time_to_resolve"] = time_to_res
+                    # Record SLA metric
+                    itsm_ticket_time_to_resolve_seconds.labels(platform=ticket.platform).observe(time_to_res)
+
             metadata = ticket.metadata or {}
             metadata["sync"] = {
                 "raw": latest,
-                "refreshed_at": _utcnow().isoformat(),
+                "refreshed_at": now.isoformat(),
             }
-            updates.append((ticket.id, {"status": status or ticket.status}, metadata))
+            updates.append((ticket.id, {"status": new_status}, metadata, sla_updates))
 
         if not updates:
             return
 
         async with self._session_factory() as session:
             async with session.begin():
-                for ticket_id, status_payload, metadata in updates:
+                for ticket_id, status_payload, metadata, sla_updates in updates:
+                    values = {
+                        "status": status_payload.get("status"),
+                        "metadata": metadata,
+                        "updated_at": _utcnow(),
+                    }
+                    # Add SLA fields if they were computed
+                    values.update(sla_updates)
+                    
                     await session.execute(
                         Ticket.__table__.update()
                         .where(Ticket.id == ticket_id)
-                        .values(
-                            status=status_payload.get("status"),
-                            metadata=metadata,
-                            updated_at=_utcnow(),
-                        )
+                        .values(**values)
                     )
 
     async def get_ticket(self, ticket_id: str) -> Optional[Ticket]:
         """Fetch ticket by primary key."""
         async with self._session_factory() as session:
             return await session.get(Ticket, ticket_id)
+
+    def list_templates(self, platform: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List available ticket templates.
+
+        Args:
+            platform: Filter by platform ('servicenow' or 'jira'). If None, return all.
+
+        Returns:
+            List of template metadata
+        """
+        return self._template_service.list_templates(platform=platform)
+
+    async def create_from_template(
+        self,
+        job_id: str,
+        platform: str,
+        template_name: str,
+        variables: Optional[Dict[str, Any]] = None,
+        *,
+        profile_name: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Ticket:
+        """
+        Create a ticket using a named template.
+
+        Args:
+            job_id: Job identifier
+            platform: Target platform ('servicenow' or 'jira')
+            template_name: Name of the template to use
+            variables: Variables for template substitution
+            profile_name: ITSM profile name
+            dry_run: Whether to create in dry-run mode
+
+        Returns:
+            Created Ticket record
+
+        Raises:
+            TemplateRenderError: If template rendering fails
+            ValueError: If validation fails
+        """
+        # Load job context for default variables
+        job_dict = await self._load_job_context(job_id)
+
+        # Prepare default variables from job context
+        default_variables = {
+            "job_id": job_id,
+            "job_name": job_dict.get("name", f"Job {job_id}"),
+            "timestamp": _utcnow().isoformat(),
+            "severity": self._severity(job_dict),
+            "details": job_dict.get("summary", ""),
+            "system": job_dict.get("system", "Unknown"),
+            "primary_cause": job_dict.get("primary_cause", "Unknown"),
+            "evidence": job_dict.get("evidence", ""),
+        }
+
+        # Merge with user-provided variables (user variables take precedence)
+        merged_variables = {**default_variables, **(variables or {})}
+
+        # Render the template
+        try:
+            rendered_payload = self._template_service.render_template(
+                platform, template_name, merged_variables
+            )
+        except TemplateRenderError as e:
+            logger.error(f"Template rendering failed for {template_name}: {e}")
+            # Increment template rendering error metric
+            itsm_template_rendering_errors_total.labels(
+                template_name=template_name
+            ).inc()
+            raise
+
+        # Validate the rendered payload
+        validation_result = validate_ticket_payload(platform, rendered_payload)
+        if not validation_result.valid:
+            error_summary = "; ".join(
+                f"{err.field}: {err.message}" for err in validation_result.errors
+            )
+            raise ValueError(f"Template validation failed: {error_summary}")
+
+        # Create the ticket with the rendered and validated payload
+        return await self.create_ticket(
+            job_id=job_id,
+            platform=platform,
+            payload=rendered_payload,
+            profile_name=profile_name,
+            dry_run=dry_run,
+            metadata={"template_name": template_name, "template_variables": merged_variables}
+        )

@@ -1,0 +1,8 @@
+2025-10-17 10:00:00 ERROR Application failed to start
+2025-10-17 10:00:01 ERROR Database connection timeout
+2025-10-17 10:00:02 WARN Retrying connection attempt 1/3
+2025-10-17 10:00:05 ERROR Connection failed: timeout after 30 seconds
+2025-10-17 10:00:05 ERROR Stack trace: at DatabaseConnector.connect()
+2025-10-17 10:00:10 INFO Attempting fallback connection
+2025-10-17 10:00:15 ERROR Fallback failed: no response from backup server
+2025-10-17 10:00:20 CRITICAL System shutdown initiated

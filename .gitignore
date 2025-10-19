@@ -94,3 +94,10 @@ Thumbs.db
 # Local development
 local_settings.py
 local_config.py
+
+# Local runtime artifacts
+.local-pids.json
+.playwright-mcp/
+.wslvenv/
+venv-wsl/
+tmp/

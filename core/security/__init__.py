@@ -21,6 +21,7 @@ from core.security.middleware import (
     RateLimitMiddleware,
     RequestLoggingMiddleware,
 )
+from core.security.audit import AnalystAuditRecorder, record_related_incident_views
 
 logger = logging.getLogger(__name__)
 _security_initialised = False
@@ -56,4 +57,6 @@ __all__ = [
     "CSRFProtectionMiddleware",
     "RateLimitMiddleware",
     "RequestLoggingMiddleware",
+    "AnalystAuditRecorder",
+    "record_related_incident_views",
 ]

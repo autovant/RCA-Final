@@ -1,0 +1,237 @@
+openapi: 3.1.0
+info:
+  title: RCA Pipeline Feature Controls API
+  version: 0.1.0
+  description: >-
+    Administrative endpoints for managing telemetry, compressed ingestion,
+    embedding cache, and quality-aware retrieval feature flags.
+servers:
+  - url: https://rca.example.com/api
+paths:
+  /admin/tenants/{tenant_id}/feature-flags:
+    get:
+      summary: Retrieve feature flag settings for a tenant
+      tags: [admin]
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Feature flag configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureFlagSettings'
+    put:
+      summary: Update feature flag settings for a tenant
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeatureFlagSettingsUpdate'
+      responses:
+        "200":
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureFlagSettings'
+  /admin/tenants/{tenant_id}/chunking:
+    get:
+      summary: Fetch chunk sizing overrides for a tenant
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        "200":
+          description: Current chunking configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkingConfig'
+    put:
+      summary: Replace chunk sizing overrides for a tenant
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChunkingConfigUpdate'
+      responses:
+        "200":
+          description: Updated overrides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkingConfig'
+  /admin/embedding-cache/tenants/{tenant_id}/evict:
+    post:
+      summary: Trigger asynchronous eviction for stale cache entries
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttl_days:
+                  type: integer
+                  minimum: 1
+                  description: Evict entries not accessed in this many days.
+              required: [ttl_days]
+      responses:
+        "202":
+          description: Eviction scheduled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                  scheduled_at:
+                    type: string
+                    format: date-time
+  /admin/retrieval/tenants/{tenant_id}/status:
+    get:
+      summary: Inspect hybrid retrieval health for a tenant
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        "200":
+          description: Retrieval status overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HybridRetrievalStatus'
+
+components:
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    FeatureFlagSettings:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        flags:
+          type: object
+          properties:
+            telemetry:
+              type: boolean
+            compressed_ingest:
+              type: boolean
+            embedding_cache:
+              type: boolean
+            quality_retrieval:
+              type: boolean
+          required:
+            - telemetry
+            - compressed_ingest
+            - embedding_cache
+            - quality_retrieval
+        updated_at:
+          type: string
+          format: date-time
+        updated_by:
+          type: string
+          format: uuid
+      required:
+        - tenant_id
+        - flags
+        - updated_at
+        - updated_by
+    FeatureFlagSettingsUpdate:
+      type: object
+      properties:
+        flags:
+          $ref: '#/components/schemas/FeatureFlagSettings/properties/flags'
+      required: [flags]
+    ChunkingConfig:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        default_token_budget:
+          type: integer
+          minimum: 1
+        per_model:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 1
+        updated_at:
+          type: string
+          format: date-time
+        updated_by:
+          type: string
+          format: uuid
+      required:
+        - tenant_id
+        - default_token_budget
+        - per_model
+        - updated_at
+        - updated_by
+    ChunkingConfigUpdate:
+      type: object
+      properties:
+        default_token_budget:
+          type: integer
+          minimum: 1
+        per_model:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 1
+      required:
+        - default_token_budget
+        - per_model
+    HybridRetrievalStatus:
+      type: object
+      properties:
+        hybrid_enabled:
+          type: boolean
+        p95_latency_ms:
+          type: integer
+        baseline_p95_latency_ms:
+          type: integer
+        last_auto_disable_at:
+          type: string
+          format: date-time
+          nullable: true
+        citation_coverage_ratio:
+          type: number
+          format: float
+        cache_hit_rate:
+          type: number
+          format: float
+      required:
+        - hybrid_enabled
+        - p95_latency_ms
+        - baseline_p95_latency_ms
+        - citation_coverage_ratio
+        - cache_hit_rate

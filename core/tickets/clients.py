@@ -4,16 +4,102 @@ HTTP client adapters for ServiceNow and Jira ITSM platforms.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import httpx
+from prometheus_client import Counter
+
+from core.logging import get_logger
+
+logger = get_logger(__name__)
+
+# Prometheus metrics for retry attempts
+itsm_ticket_retry_attempts_total = Counter(
+    'itsm_ticket_retry_attempts_total',
+    'Total number of ITSM ticket retry attempts',
+    ['platform']
+)
 
 
 class TicketClientError(RuntimeError):
     """Raised when a remote ITSM integration fails."""
+
+
+@dataclass
+class RetryPolicy:
+    """Configuration for retry behavior."""
+
+    max_retries: int = 3
+    retry_delay_seconds: float = 5.0
+    exponential_backoff: bool = True
+    backoff_multiplier: float = 2.0
+    max_retry_delay_seconds: float = 60.0
+    retryable_status_codes: List[int] = field(default_factory=lambda: [429, 500, 502, 503, 504])
+
+    @classmethod
+    def from_config(cls, config_path: Optional[str] = None) -> "RetryPolicy":
+        """Load retry policy from itsm_config.json."""
+        if config_path is None:
+            config_path = str(Path(__file__).parent.parent.parent / "config" / "itsm_config.json")
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                retry_config = config.get("retry_policy", {})
+                return cls(
+                    max_retries=retry_config.get("max_retries", 3),
+                    retry_delay_seconds=retry_config.get("retry_delay_seconds", 5.0),
+                    exponential_backoff=retry_config.get("exponential_backoff", True),
+                    backoff_multiplier=retry_config.get("backoff_multiplier", 2.0),
+                    max_retry_delay_seconds=retry_config.get("max_retry_delay_seconds", 60.0),
+                    retryable_status_codes=retry_config.get("retryable_status_codes", [429, 500, 502, 503, 504])
+                )
+        except Exception as e:
+            logger.warning(f"Failed to load retry policy from config: {e}. Using defaults.")
+            return cls()
+
+
+@dataclass
+class TimeoutConfig:
+    """Configuration for request timeouts."""
+
+    connection_timeout_seconds: float = 10.0
+    read_timeout_seconds: float = 30.0
+    total_timeout_seconds: float = 60.0
+
+    @classmethod
+    def from_config(cls, config_path: Optional[str] = None) -> "TimeoutConfig":
+        """Load timeout config from itsm_config.json."""
+        if config_path is None:
+            config_path = str(Path(__file__).parent.parent.parent / "config" / "itsm_config.json")
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                timeout_config = config.get("timeout", {})
+                return cls(
+                    connection_timeout_seconds=timeout_config.get("connection_timeout_seconds", 10.0),
+                    read_timeout_seconds=timeout_config.get("read_timeout_seconds", 30.0),
+                    total_timeout_seconds=timeout_config.get("total_timeout_seconds", 60.0)
+                )
+        except Exception as e:
+            logger.warning(f"Failed to load timeout config: {e}. Using defaults.")
+            return cls()
+
+    def to_httpx_timeout(self) -> httpx.Timeout:
+        """Convert to httpx.Timeout object."""
+        return httpx.Timeout(
+            connect=self.connection_timeout_seconds,
+            read=self.read_timeout_seconds,
+            write=self.total_timeout_seconds,
+            pool=self.total_timeout_seconds
+        )
 
 
 @dataclass(slots=True)
@@ -81,10 +167,12 @@ class ServiceNowClient:
         "7": "Closed",
     }
 
-    def __init__(self, config: ServiceNowClientConfig) -> None:
+    def __init__(self, config: ServiceNowClientConfig, retry_policy: Optional[RetryPolicy] = None, timeout_config: Optional[TimeoutConfig] = None) -> None:
         self._config = config
         self._token: Optional[str] = None
         self._token_expiry: Optional[float] = None
+        self._retry_policy = retry_policy or RetryPolicy.from_config()
+        self._timeout_config = timeout_config or TimeoutConfig.from_config()
 
     @property
     def enabled(self) -> bool:
@@ -153,36 +241,114 @@ class ServiceNowClient:
         *,
         json_payload: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
-    ) -> httpx.Response:
+    ) -> tuple[httpx.Response, Dict[str, Any]]:
+        """
+        Execute HTTP request with retry logic and exponential backoff.
+
+        Returns:
+            Tuple of (response, retry_metadata)
+        """
         if not self.enabled:
             raise TicketClientError("ServiceNow client is not configured with a base URL")
 
         url = f"{self._config.base_url.rstrip('/')}/{path.lstrip('/')}"
-        headers = self._build_headers()
-        auth = None
-        if self._config.auth_type.lower() == "oauth":
-            token = await self._get_oauth_token()
-            headers["Authorization"] = f"Bearer {token}"
-        else:
-            # Basic auth already encoded in header
-            pass
+        retry_metadata: Dict[str, Any] = {
+            "retry_attempts": 0,
+            "retry_delays": [],
+            "retryable_errors": [],
+            "final_error": None
+        }
 
-        async with httpx.AsyncClient(
-            timeout=self._config.timeout, verify=self._config.verify_ssl
-        ) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                json=json_payload,
-                params=params,
-                auth=auth,
-            )
-        if response.status_code >= 400:
-            raise TicketClientError(
-                f"ServiceNow API responded with {response.status_code}: {response.text}"
-            )
-        return response
+        for attempt in range(self._retry_policy.max_retries + 1):
+            try:
+                headers = self._build_headers()
+                auth = None
+                if self._config.auth_type.lower() == "oauth":
+                    token = await self._get_oauth_token()
+                    headers["Authorization"] = f"Bearer {token}"
+
+                timeout = self._timeout_config.to_httpx_timeout()
+                async with httpx.AsyncClient(
+                    timeout=timeout, verify=self._config.verify_ssl
+                ) as client:
+                    response = await client.request(
+                        method,
+                        url,
+                        headers=headers,
+                        json=json_payload,
+                        params=params,
+                        auth=auth,
+                    )
+
+                # Check if response is retryable
+                if response.status_code in self._retry_policy.retryable_status_codes:
+                    error_msg = f"ServiceNow API responded with retryable status {response.status_code}"
+                    retry_metadata["retryable_errors"].append({
+                        "attempt": attempt + 1,
+                        "status_code": response.status_code,
+                        "message": error_msg
+                    })
+
+                    if attempt < self._retry_policy.max_retries:
+                        # Calculate delay with exponential backoff
+                        if self._retry_policy.exponential_backoff:
+                            delay = min(
+                                self._retry_policy.retry_delay_seconds * (self._retry_policy.backoff_multiplier ** attempt),
+                                self._retry_policy.max_retry_delay_seconds
+                            )
+                        else:
+                            delay = self._retry_policy.retry_delay_seconds
+
+                        retry_metadata["retry_delays"].append(delay)
+                        retry_metadata["retry_attempts"] = attempt + 1
+                        
+                        # Increment retry metric
+                        itsm_ticket_retry_attempts_total.labels(platform="servicenow").inc()
+
+                        logger.warning(f"ServiceNow request failed (attempt {attempt + 1}/{self._retry_policy.max_retries + 1}), retrying in {delay}s: {error_msg}")
+                        await asyncio.sleep(delay)
+                        continue
+
+                # Non-retryable error
+                if response.status_code >= 400:
+                    error_msg = f"ServiceNow API responded with {response.status_code}: {response.text}"
+                    retry_metadata["final_error"] = error_msg
+                    raise TicketClientError(error_msg)
+
+                # Success
+                return response, retry_metadata
+
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+                error_msg = f"ServiceNow request failed with network error: {type(e).__name__}: {str(e)}"
+                retry_metadata["retryable_errors"].append({
+                    "attempt": attempt + 1,
+                    "error_type": type(e).__name__,
+                    "message": str(e)
+                })
+
+                if attempt < self._retry_policy.max_retries:
+                    if self._retry_policy.exponential_backoff:
+                        delay = min(
+                            self._retry_policy.retry_delay_seconds * (self._retry_policy.backoff_multiplier ** attempt),
+                            self._retry_policy.max_retry_delay_seconds
+                        )
+                    else:
+                        delay = self._retry_policy.retry_delay_seconds
+
+                    retry_metadata["retry_delays"].append(delay)
+                    retry_metadata["retry_attempts"] = attempt + 1
+
+                    logger.warning(f"ServiceNow request failed (attempt {attempt + 1}/{self._retry_policy.max_retries + 1}), retrying in {delay}s: {error_msg}")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    retry_metadata["final_error"] = error_msg
+                    raise TicketClientError(error_msg) from e
+
+        # Should not reach here, but handle gracefully
+        final_error = f"ServiceNow request exhausted all {self._retry_policy.max_retries + 1} attempts"
+        retry_metadata["final_error"] = final_error
+        raise TicketClientError(final_error)
 
     def _default_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(payload)
@@ -198,7 +364,7 @@ class ServiceNowClient:
     async def create_incident(self, payload: Dict[str, Any]) -> TicketCreationResult:
         """Create an incident and return the assigned identifiers."""
         request_payload = self._default_payload(payload)
-        response = await self._request(
+        response, retry_metadata = await self._request(
             "POST",
             "/api/now/table/incident",
             json_payload=request_payload,
@@ -216,6 +382,7 @@ class ServiceNowClient:
             "number": number,
             "state": state,
             "state_label": state_label,
+            "retry_metadata": retry_metadata,
         }
         return TicketCreationResult(
             ticket_id=str(number),
@@ -228,7 +395,7 @@ class ServiceNowClient:
     async def fetch_incident(self, ticket_number: str) -> Optional[Dict[str, Any]]:
         """Retrieve a ServiceNow incident by ticket number."""
         try:
-            response = await self._request(
+            response, retry_metadata = await self._request(
                 "GET",
                 "/api/now/table/incident",
                 params={"sysparm_query": f"number={ticket_number}", "sysparm_limit": 1},
@@ -240,6 +407,7 @@ class ServiceNowClient:
         if isinstance(result, list):
             for entry in result:
                 if str(entry.get("number")) == str(ticket_number):
+                    entry["_retry_metadata"] = retry_metadata
                     return entry
         return None
 
@@ -247,8 +415,10 @@ class ServiceNowClient:
 class JiraClient:
     """Thin wrapper around the Jira issue REST API."""
 
-    def __init__(self, config: JiraClientConfig) -> None:
+    def __init__(self, config: JiraClientConfig, retry_policy: Optional[RetryPolicy] = None, timeout_config: Optional[TimeoutConfig] = None) -> None:
         self._config = config
+        self._retry_policy = retry_policy or RetryPolicy.from_config()
+        self._timeout_config = timeout_config or TimeoutConfig.from_config()
 
     @property
     def enabled(self) -> bool:
@@ -337,27 +507,110 @@ class JiraClient:
         *,
         json_payload: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
-    ) -> httpx.Response:
+    ) -> tuple[httpx.Response, Dict[str, Any]]:
+        """
+        Execute HTTP request with retry logic and exponential backoff.
+
+        Returns:
+            Tuple of (response, retry_metadata)
+        """
         if not self.enabled:
             raise TicketClientError("Jira client is not configured with a base URL")
+
         url = f"{self._config.base_url.rstrip('/')}/{path.lstrip('/')}"
-        headers = self._build_headers()
-        async with httpx.AsyncClient(
-            timeout=self._config.timeout, verify=self._config.verify_ssl
-        ) as client:
-            response = await client.request(
-                method, url, headers=headers, json=json_payload, params=params
-            )
-        if response.status_code >= 400:
-            raise TicketClientError(
-                f"Jira API responded with {response.status_code}: {response.text}"
-            )
-        return response
+        retry_metadata: Dict[str, Any] = {
+            "retry_attempts": 0,
+            "retry_delays": [],
+            "retryable_errors": [],
+            "final_error": None
+        }
+
+        for attempt in range(self._retry_policy.max_retries + 1):
+            try:
+                headers = self._build_headers()
+                timeout = self._timeout_config.to_httpx_timeout()
+
+                async with httpx.AsyncClient(
+                    timeout=timeout, verify=self._config.verify_ssl
+                ) as client:
+                    response = await client.request(
+                        method, url, headers=headers, json=json_payload, params=params
+                    )
+
+                # Check if response is retryable
+                if response.status_code in self._retry_policy.retryable_status_codes:
+                    error_msg = f"Jira API responded with retryable status {response.status_code}"
+                    retry_metadata["retryable_errors"].append({
+                        "attempt": attempt + 1,
+                        "status_code": response.status_code,
+                        "message": error_msg
+                    })
+
+                    if attempt < self._retry_policy.max_retries:
+                        # Calculate delay with exponential backoff
+                        if self._retry_policy.exponential_backoff:
+                            delay = min(
+                                self._retry_policy.retry_delay_seconds * (self._retry_policy.backoff_multiplier ** attempt),
+                                self._retry_policy.max_retry_delay_seconds
+                            )
+                        else:
+                            delay = self._retry_policy.retry_delay_seconds
+
+                        retry_metadata["retry_delays"].append(delay)
+                        retry_metadata["retry_attempts"] = attempt + 1
+                        
+                        # Increment retry metric
+                        itsm_ticket_retry_attempts_total.labels(platform="jira").inc()
+
+                        logger.warning(f"Jira request failed (attempt {attempt + 1}/{self._retry_policy.max_retries + 1}), retrying in {delay}s: {error_msg}")
+                        await asyncio.sleep(delay)
+                        continue
+
+                # Non-retryable error
+                if response.status_code >= 400:
+                    error_msg = f"Jira API responded with {response.status_code}: {response.text}"
+                    retry_metadata["final_error"] = error_msg
+                    raise TicketClientError(error_msg)
+
+                # Success
+                return response, retry_metadata
+
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+                error_msg = f"Jira request failed with network error: {type(e).__name__}: {str(e)}"
+                retry_metadata["retryable_errors"].append({
+                    "attempt": attempt + 1,
+                    "error_type": type(e).__name__,
+                    "message": str(e)
+                })
+
+                if attempt < self._retry_policy.max_retries:
+                    if self._retry_policy.exponential_backoff:
+                        delay = min(
+                            self._retry_policy.retry_delay_seconds * (self._retry_policy.backoff_multiplier ** attempt),
+                            self._retry_policy.max_retry_delay_seconds
+                        )
+                    else:
+                        delay = self._retry_policy.retry_delay_seconds
+
+                    retry_metadata["retry_delays"].append(delay)
+                    retry_metadata["retry_attempts"] = attempt + 1
+
+                    logger.warning(f"Jira request failed (attempt {attempt + 1}/{self._retry_policy.max_retries + 1}), retrying in {delay}s: {error_msg}")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    retry_metadata["final_error"] = error_msg
+                    raise TicketClientError(error_msg) from e
+
+        # Should not reach here, but handle gracefully
+        final_error = f"Jira request exhausted all {self._retry_policy.max_retries + 1} attempts"
+        retry_metadata["final_error"] = final_error
+        raise TicketClientError(final_error)
 
     async def create_issue(self, payload: Dict[str, Any]) -> TicketCreationResult:
         body = self._default_payload(payload)
         body = self._augment_with_links(body, payload)
-        response = await self._request("POST", self._issue_endpoint(), json_payload=body)
+        response, retry_metadata = await self._request("POST", self._issue_endpoint(), json_payload=body)
         data = response.json()
         key = data.get("key")
         url = f"{self._config.base_url.rstrip('/')}/browse/{key}" if key else None
@@ -365,6 +618,7 @@ class JiraClient:
             "id": data.get("id"),
             "key": key,
             "self": data.get("self"),
+            "retry_metadata": retry_metadata,
         }
         # Retrieve current status if requested
         fields = payload.get("fields") or {}
@@ -379,10 +633,12 @@ class JiraClient:
 
     async def fetch_issue(self, ticket_key: str) -> Optional[Dict[str, Any]]:
         try:
-            response = await self._request("GET", f"{self._issue_endpoint()}/{ticket_key}")
+            response, retry_metadata = await self._request("GET", f"{self._issue_endpoint()}/{ticket_key}")
         except TicketClientError:
             return None
-        return response.json()
+        issue_data = response.json()
+        issue_data["_retry_metadata"] = retry_metadata
+        return issue_data
 
 
 __all__ = [
@@ -392,4 +648,6 @@ __all__ = [
     "ServiceNowClientConfig",
     "JiraClientConfig",
     "TicketCreationResult",
+    "RetryPolicy",
+    "TimeoutConfig",
 ]

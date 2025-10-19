@@ -1,0 +1,37 @@
+# Alert rules ensuring Thanos remote write stays healthy.
+
+groups:
+  - name: telemetry-remote-write
+    interval: 30s
+    rules:
+      - alert: TelemetryRemoteWriteFailure
+        expr: |
+          rate(prometheus_remote_storage_failed_samples_total[5m])
+            /
+          rate(prometheus_remote_storage_samples_total[5m])
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          component: telemetry
+        annotations:
+          summary: "Remote write to Thanos failing (>5% samples lost)"
+          description: |
+            Prometheus is dropping {{ $value | humanizePercentage }} of samples while
+            forwarding telemetry metrics to Thanos. Check connectivity, credentials,
+            or ingestion rate limits.
+
+      - alert: TelemetryRemoteWriteQueueBacklog
+        expr: |
+          max_over_time(prometheus_remote_storage_highest_timestamp_in_seconds[15m])
+            < on()
+          (time() - 600)
+        for: 5m
+        labels:
+          severity: warning
+          component: telemetry
+        annotations:
+          summary: "Remote write queue falling behind"
+          description: |
+            Remote write queue has not uploaded data in the last 10 minutes.
+            Investigate network path to Thanos gateway and disk I/O saturation.

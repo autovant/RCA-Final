@@ -17,6 +17,8 @@ from core.jobs.processor import JobProcessor
 from core.logging import setup_logging
 from core.metrics import setup_metrics
 
+from apps.worker.events import emit_fingerprint_status
+
 # Setup logging
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -107,6 +109,16 @@ class Worker:
             
             # Update job with results
             await self.job_service.complete_job(job.id, result)
+
+            try:
+                await emit_fingerprint_status(
+                    self.job_service,
+                    str(job.id),
+                    result.get("fingerprint"),
+                    job_type=str(job.job_type),
+                )
+            except Exception:  # pragma: no cover - telemetry must not block job completion
+                logger.exception("Failed to emit fingerprint status telemetry for job %s", job.id)
             
             logger.info(f"Job completed successfully: {job.id}")
             

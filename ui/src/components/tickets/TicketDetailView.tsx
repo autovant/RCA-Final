@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { X, ExternalLink, Calendar, User, Tag, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
+import { X, ExternalLink, Calendar, User, Tag, AlertCircle, Clock } from 'lucide-react';
 import { Ticket } from '@/types/tickets';
 import {
   getStatusConfig,
@@ -15,16 +15,27 @@ interface TicketDetailViewProps {
   onClose: () => void;
 }
 
+const asString = (value: unknown): string | undefined =>
+  typeof value === 'string' ? value : undefined;
+
+const asStringArray = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value.filter((item): item is string => typeof item === 'string');
+};
+
 export const TicketDetailView: React.FC<TicketDetailViewProps> = ({ ticket, onClose }) => {
   const statusConfig = getStatusConfig(ticket.status);
   const platformConfig = getPlatformConfig(ticket.platform);
 
-  const renderMetadataField = (label: string, value: string | undefined | null) => {
-    if (!value) return null;
+  const renderMetadataField = (label: string, value: unknown) => {
+    const formatted = asString(value);
+    if (!formatted) return null;
     return (
       <div className="flex justify-between items-start py-2 border-b border-gray-100 last:border-0">
         <span className="text-sm font-medium text-gray-600">{label}:</span>
-        <span className="text-sm text-gray-900 text-right max-w-md">{value}</span>
+        <span className="text-sm text-gray-900 text-right max-w-md">{formatted}</span>
       </div>
     );
   };
@@ -38,11 +49,16 @@ export const TicketDetailView: React.FC<TicketDetailViewProps> = ({ ticket, onCl
         {renderMetadataField('Issue Type', ticket.metadata.issue_type)}
         {renderMetadataField('Priority', ticket.metadata.priority)}
         {renderMetadataField('Assignee', ticket.metadata.assignee)}
-        {ticket.metadata.labels && ticket.metadata.labels.length > 0 && (
+        {(() => {
+          const labels = asStringArray(ticket.metadata.labels);
+          if (!labels || labels.length === 0) {
+            return null;
+          }
+          return (
           <div className="flex justify-between items-start py-2 border-b border-gray-100">
             <span className="text-sm font-medium text-gray-600">Labels:</span>
             <div className="flex flex-wrap gap-1 justify-end max-w-md">
-              {ticket.metadata.labels.map((label: string, index: number) => (
+              {labels.map((label, index) => (
                 <span
                   key={index}
                   className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800"
@@ -52,7 +68,8 @@ export const TicketDetailView: React.FC<TicketDetailViewProps> = ({ ticket, onCl
               ))}
             </div>
           </div>
-        )}
+          );
+        })()}
         {renderMetadataField('ServiceNow Reference', ticket.metadata.servicenow_incident_id)}
       </>
     );
@@ -88,6 +105,7 @@ export const TicketDetailView: React.FC<TicketDetailViewProps> = ({ ticket, onCl
           </div>
           <button
             onClick={onClose}
+            aria-label="Close ticket details"
             className="text-white hover:bg-blue-800 p-2 rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />

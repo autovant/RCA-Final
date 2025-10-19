@@ -4,7 +4,7 @@ Provides async database connection pool and session management.
 """
 
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Callable
+from typing import AsyncContextManager, AsyncGenerator, Callable, cast
 
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -31,15 +31,20 @@ class DatabaseManager:
     
     def _create_engine(self) -> AsyncEngine:
         """Create async database engine with connection pooling."""
+        # Disable SSL for local development via port forwarding to avoid connection resets
+        connect_args = {"ssl": False}
+        
+        database_settings = settings.database
         engine = create_async_engine(
-            settings.database.DATABASE_URL,
-            pool_size=settings.database.DB_POOL_SIZE,
-            max_overflow=settings.database.DB_MAX_OVERFLOW,
-            pool_timeout=settings.database.DB_POOL_TIMEOUT,
-            pool_recycle=settings.database.DB_POOL_RECYCLE,
-            pool_pre_ping=settings.database.DB_POOL_PRE_PING,
+            cast(str, database_settings.DATABASE_URL),
+            pool_size=database_settings.DB_POOL_SIZE,
+            max_overflow=database_settings.DB_MAX_OVERFLOW,
+            pool_timeout=database_settings.DB_POOL_TIMEOUT,
+            pool_recycle=database_settings.DB_POOL_RECYCLE,
+            pool_pre_ping=database_settings.DB_POOL_PRE_PING,
             echo=settings.DEBUG,
             future=True,
+            connect_args=connect_args,
         )
         
         # Register connection event listeners
@@ -74,7 +79,10 @@ class DatabaseManager:
             )
             
             # Test connection
-            async with self._engine.begin() as conn:
+            engine = self._engine
+            if engine is None:
+                raise RuntimeError("Database engine was not initialised")
+            async with engine.begin() as conn:
                 await conn.execute(text("SELECT 1"))
             
             self._initialized = True
@@ -91,12 +99,19 @@ class DatabaseManager:
         
         try:
             logger.info("Creating database tables...")
-            async with self._engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+            engine = self._engine
+            if engine is None:
+                raise RuntimeError("Database engine was not initialised")
+            async with engine.begin() as conn:
+                await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
             logger.info("Database tables created successfully")
         except Exception as e:
-            logger.error(f"Failed to create database tables: {e}")
-            raise
+            # Ignore duplicate table/index errors from concurrent creation attempts
+            if "already exists" in str(e).lower():
+                logger.warning(f"Database objects already exist (concurrent creation): {e}")
+            else:
+                logger.error(f"Failed to create database tables: {e}")
+                raise
     
     async def drop_tables(self):
         """Drop all database tables (use with caution!)."""
@@ -105,7 +120,10 @@ class DatabaseManager:
         
         try:
             logger.warning("Dropping all database tables...")
-            async with self._engine.begin() as conn:
+            engine = self._engine
+            if engine is None:
+                raise RuntimeError("Database engine was not initialised")
+            async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.drop_all)
             logger.info("Database tables dropped successfully")
         except Exception as e:
@@ -179,7 +197,10 @@ class DatabaseManager:
             return False
         
         try:
-            async with self._engine.begin() as conn:
+            engine = self._engine
+            if engine is None:
+                return False
+            async with engine.begin() as conn:
                 await conn.execute(text("SELECT 1"))
             return True
         except Exception as e:
@@ -220,7 +241,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-def get_db_session() -> Callable[[], AsyncGenerator[AsyncSession, None]]:
+def get_db_session() -> Callable[[], AsyncContextManager[AsyncSession]]:
     """
     Provide a callable compatible with legacy call-sites that expect to obtain an
     async context manager via ``async with get_db_session()():``.

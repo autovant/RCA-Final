@@ -561,6 +561,711 @@ STATUS_MAP = {
 
 ---
 
+## Retry and Timeout Configuration
+
+The ITSM integration includes robust retry logic and timeout handling to ensure reliable ticket creation even during network issues or service degradation.
+
+### Retry Configuration
+
+**Default Settings:**
+```python
+MAX_RETRIES = 3              # Maximum number of retry attempts
+RETRY_DELAY = 1.0            # Initial delay between retries (seconds)
+RETRY_BACKOFF = 2.0          # Exponential backoff multiplier
+```
+
+**Environment Variables:**
+```bash
+# Retry Configuration
+ITSM_MAX_RETRIES=3
+ITSM_RETRY_DELAY=1.0
+ITSM_RETRY_BACKOFF=2.0
+```
+
+**Retry Behavior:**
+- Initial attempt fails → Wait 1 second
+- First retry fails → Wait 2 seconds (1 × 2^1)
+- Second retry fails → Wait 4 seconds (1 × 2^2)
+- Third retry fails → Return error
+
+**Retryable Errors:**
+- `429 Too Many Requests` - Rate limit exceeded
+- `500 Internal Server Error` - Temporary server issues
+- `502 Bad Gateway` - Upstream service unavailable
+- `503 Service Unavailable` - Service temporarily down
+- `504 Gateway Timeout` - Request timeout
+- Network connection errors
+
+**Non-Retryable Errors:**
+- `400 Bad Request` - Invalid payload
+- `401 Unauthorized` - Authentication failure
+- `403 Forbidden` - Permission denied
+- `404 Not Found` - Resource not found
+
+### Timeout Configuration
+
+**Default Timeouts:**
+```python
+CONNECTION_TIMEOUT = 10      # Connection establishment timeout (seconds)
+READ_TIMEOUT = 30            # Response read timeout (seconds)
+TOTAL_TIMEOUT = 60           # Total request timeout (seconds)
+```
+
+**Environment Variables:**
+```bash
+# Timeout Configuration
+SERVICENOW_TIMEOUT=30
+JIRA_TIMEOUT=30
+```
+
+**Timeout Behavior:**
+- If request exceeds timeout → Retry (if retries remaining)
+- If all retries exhausted → Return timeout error
+- Metrics track timeout occurrences
+
+### Monitoring Retry Behavior
+
+Retry attempts are tracked via Prometheus metrics:
+```promql
+# Total retry attempts by platform
+itsm_ticket_retry_attempts_total{platform="servicenow"}
+itsm_ticket_retry_attempts_total{platform="jira"}
+
+# Alert on excessive retries
+rate(itsm_ticket_retry_attempts_total[5m]) > 10
+```
+
+---
+
+## Validation Rules
+
+The ITSM integration validates all ticket payloads before submission to external systems. Validation errors are returned with detailed field-level feedback.
+
+### ServiceNow Validation Rules
+
+**Required Fields:**
+- `short_description` - Must be non-empty string (max 160 characters)
+
+**Optional Fields with Validation:**
+- `description` - String (max 4000 characters)
+- `priority` - Must be one of: `1`, `2`, `3`, `4`, `5`
+- `state` - Must be one of: `1`, `2`, `3`, `4`, `6`, `7`
+- `assignment_group` - String (max 80 characters)
+- `assigned_to` - Valid user ID or email
+- `configuration_item` - Valid CI name or sys_id
+- `category` - String (max 50 characters)
+- `subcategory` - String (max 50 characters)
+
+**Example Validation Error:**
+```json
+{
+  "detail": "Validation failed",
+  "validation_errors": [
+    {
+      "field": "short_description",
+      "message": "Field is required and cannot be empty"
+    },
+    {
+      "field": "priority",
+      "message": "Must be one of: 1, 2, 3, 4, 5"
+    }
+  ]
+}
+```
+
+### Jira Validation Rules
+
+**Required Fields:**
+- `project_key` - Must exist in Jira instance
+- `summary` - Must be non-empty string (max 255 characters)
+
+**Optional Fields with Validation:**
+- `description` - String (Jira Markdown format)
+- `issue_type` - Must exist in project (default: `Incident`)
+- `priority` - Must be valid priority name (e.g., `High`, `Medium`, `Low`)
+- `assignee` - Valid Jira username or account ID
+- `labels` - Array of strings (alphanumeric + hyphens/underscores)
+- `components` - Array of objects with `name` property
+
+**Example Validation Error:**
+```json
+{
+  "detail": "Validation failed",
+  "validation_errors": [
+    {
+      "field": "project_key",
+      "message": "Project key is required"
+    },
+    {
+      "field": "labels",
+      "message": "Labels must contain only alphanumeric characters, hyphens, and underscores"
+    }
+  ]
+}
+```
+
+### Custom Validation Logic
+
+Location: `core/tickets/validation.py`
+
+```python
+def validate_ticket_payload(platform: str, payload: Dict[str, Any]) -> ValidationResult:
+    """
+    Validates ticket payload based on platform-specific rules.
+    
+    Returns:
+        ValidationResult with is_valid flag and list of FieldError objects
+    """
+    pass
+```
+
+---
+
+## Template Usage
+
+Templates allow you to create tickets from pre-configured blueprints with variable substitution, reducing manual data entry and ensuring consistency.
+
+### Template Structure
+
+Templates are defined in `config/itsm_config.json`:
+
+```json
+{
+  "templates": {
+    "servicenow": [
+      {
+        "name": "production_incident",
+        "description": "Template for production incidents",
+        "required_variables": ["service_name", "error_message"],
+        "payload": {
+          "short_description": "Production Incident: {service_name}",
+          "description": "Error: {error_message}\n\nEnvironment: Production",
+          "priority": "1",
+          "state": "2",
+          "category": "Software",
+          "subcategory": "Application Error"
+        }
+      }
+    ],
+    "jira": [
+      {
+        "name": "bug_report",
+        "description": "Standard bug report template",
+        "required_variables": ["component", "bug_description"],
+        "payload": {
+          "issue_type": "Bug",
+          "summary": "Bug in {component}",
+          "description": "{bug_description}",
+          "priority": "High",
+          "labels": ["bug", "production"]
+        }
+      }
+    ]
+  }
+}
+```
+
+### Using Templates via API
+
+**List Available Templates:**
+```bash
+curl "http://localhost:8000/api/v1/tickets/templates?platform=servicenow"
+```
+
+**Response:**
+```json
+{
+  "templates": [
+    {
+      "name": "production_incident",
+      "platform": "servicenow",
+      "description": "Template for production incidents",
+      "required_variables": ["service_name", "error_message"],
+      "field_count": 6
+    }
+  ],
+  "count": 1
+}
+```
+
+**Create Ticket from Template:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/tickets/from-template" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_id": "job-123",
+    "platform": "servicenow",
+    "template_name": "production_incident",
+    "variables": {
+      "service_name": "Payment API",
+      "error_message": "Database connection timeout"
+    },
+    "dry_run": false
+  }'
+```
+
+**Response:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "job_id": "job-123",
+  "platform": "servicenow",
+  "ticket_id": "INC0012345",
+  "url": "https://yourcompany.service-now.com/incident.do?sys_id=abc123",
+  "status": "New",
+  "template_name": "production_incident",
+  "created_at": "2025-10-12T10:30:00Z"
+}
+```
+
+### Using Templates via UI
+
+1. Open Ticket Creation Form
+2. Check "Use Template" toggle
+3. Select template from dropdown (filtered by platform)
+4. Fill in required variables
+5. Preview shows variable substitution
+6. Submit to create ticket
+
+### Template Rendering Errors
+
+If template rendering fails, the error is tracked:
+```promql
+itsm_template_rendering_errors_total{template_name="production_incident"}
+```
+
+---
+
+## API Endpoints
+
+### Ticket Management Endpoints
+
+#### Create Ticket
+```http
+POST /api/v1/tickets/
+Content-Type: application/json
+
+{
+  "job_id": "string",
+  "platform": "servicenow" | "jira",
+  "payload": { /* platform-specific fields */ },
+  "profile_name": "string (optional)",
+  "dry_run": boolean
+}
+```
+
+**Response:** `201 Created` with ticket object
+
+---
+
+#### List Job Tickets
+```http
+GET /api/v1/tickets/{job_id}?refresh=false
+```
+
+**Query Parameters:**
+- `refresh` (optional): If `true`, fetch latest status from external systems
+
+**Response:** `200 OK` with ticket list
+
+---
+
+#### Get Template List
+```http
+GET /api/v1/tickets/templates?platform=servicenow
+```
+
+**Query Parameters:**
+- `platform` (optional): Filter by platform (`servicenow` or `jira`)
+
+**Response:** `200 OK`
+```json
+{
+  "templates": [
+    {
+      "name": "string",
+      "platform": "servicenow" | "jira",
+      "description": "string",
+      "required_variables": ["string"],
+      "field_count": number
+    }
+  ],
+  "count": number
+}
+```
+
+---
+
+#### Create from Template
+```http
+POST /api/v1/tickets/from-template
+Content-Type: application/json
+
+{
+  "job_id": "string",
+  "platform": "servicenow" | "jira",
+  "template_name": "string",
+  "variables": { "key": "value" },
+  "profile_name": "string (optional)",
+  "dry_run": boolean
+}
+```
+
+**Response:** `201 Created`
+```json
+{
+  "id": "uuid",
+  "job_id": "string",
+  "platform": "servicenow" | "jira",
+  "ticket_id": "string",
+  "url": "string",
+  "status": "string",
+  "template_name": "string",
+  "created_at": "ISO 8601 timestamp"
+}
+```
+
+**Error Responses:**
+- `404 Not Found` - Job or template not found
+- `400 Bad Request` - Validation errors or missing variables
+- `500 Internal Server Error` - External API errors
+
+---
+
+### Feature Toggle Endpoints
+
+#### Get Toggle State
+```http
+GET /api/v1/tickets/toggle
+```
+
+**Response:** `200 OK`
+```json
+{
+  "servicenow_enabled": boolean,
+  "jira_enabled": boolean,
+  "dual_mode": boolean
+}
+```
+
+---
+
+#### Update Toggle State
+```http
+PUT /api/v1/tickets/toggle
+Content-Type: application/json
+
+{
+  "servicenow_enabled": boolean,
+  "jira_enabled": boolean,
+  "dual_mode": boolean
+}
+```
+
+**Response:** `200 OK` with updated toggle state
+
+---
+
+## Metrics and Monitoring
+
+The ITSM integration exposes comprehensive Prometheus metrics for monitoring ticket operations, performance, and errors.
+
+### Available Metrics
+
+#### 1. Ticket Creation Total
+```promql
+itsm_ticket_creation_total{platform="servicenow|jira", outcome="success|failure"}
+```
+**Type:** Counter  
+**Labels:** `platform`, `outcome`  
+**Description:** Total number of ticket creation attempts by platform and outcome
+
+**Example Queries:**
+```promql
+# Success rate by platform
+rate(itsm_ticket_creation_total{outcome="success"}[5m])
+  / rate(itsm_ticket_creation_total[5m])
+
+# Error rate
+rate(itsm_ticket_creation_total{outcome="failure"}[5m])
+```
+
+---
+
+#### 2. Ticket Creation Duration
+```promql
+itsm_ticket_creation_duration_seconds{platform="servicenow|jira", outcome="success|failure"}
+```
+**Type:** Histogram  
+**Labels:** `platform`, `outcome`  
+**Buckets:** `[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]`  
+**Description:** Duration of ticket creation operations in seconds
+
+**Example Queries:**
+```promql
+# p95 latency by platform
+histogram_quantile(0.95, 
+  rate(itsm_ticket_creation_duration_seconds_bucket[5m])
+)
+
+# Average duration
+rate(itsm_ticket_creation_duration_seconds_sum[5m])
+  / rate(itsm_ticket_creation_duration_seconds_count[5m])
+```
+
+---
+
+#### 3. Retry Attempts
+```promql
+itsm_ticket_retry_attempts_total{platform="servicenow|jira"}
+```
+**Type:** Counter  
+**Labels:** `platform`  
+**Description:** Total number of retry attempts for failed ticket operations
+
+**Example Queries:**
+```promql
+# Retry rate over last 5 minutes
+rate(itsm_ticket_retry_attempts_total[5m])
+
+# Total retries by platform
+sum by (platform) (itsm_ticket_retry_attempts_total)
+```
+
+---
+
+#### 4. Validation Errors
+```promql
+itsm_validation_errors_total{platform="servicenow|jira", field="string"}
+```
+**Type:** Counter  
+**Labels:** `platform`, `field`  
+**Description:** Total validation errors by platform and field name
+
+**Example Queries:**
+```promql
+# Top 10 validation errors
+topk(10, sum by (field) (itsm_validation_errors_total))
+
+# Validation error rate
+rate(itsm_validation_errors_total[5m])
+```
+
+---
+
+#### 5. Template Rendering Errors
+```promql
+itsm_template_rendering_errors_total{template_name="string"}
+```
+**Type:** Counter  
+**Labels:** `template_name`  
+**Description:** Total template rendering errors by template name
+
+**Example Queries:**
+```promql
+# Templates with rendering errors
+sum by (template_name) (itsm_template_rendering_errors_total)
+```
+
+---
+
+#### 6. Time to Acknowledge (SLA)
+```promql
+itsm_ticket_time_to_acknowledge_seconds{platform="servicenow|jira"}
+```
+**Type:** Histogram  
+**Labels:** `platform`  
+**Buckets:** `[60, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]` (1m to 1d)  
+**Description:** Time from ticket creation to acknowledgement in seconds
+
+**Example Queries:**
+```promql
+# p95 time to acknowledge
+histogram_quantile(0.95,
+  rate(itsm_ticket_time_to_acknowledge_seconds_bucket[1h])
+)
+```
+
+---
+
+#### 7. Time to Resolve (SLA)
+```promql
+itsm_ticket_time_to_resolve_seconds{platform="servicenow|jira"}
+```
+**Type:** Histogram  
+**Labels:** `platform`  
+**Buckets:** `[300, 1800, 3600, 7200, 14400, 28800, 86400, 172800, 604800]` (5m to 1w)  
+**Description:** Time from ticket creation to resolution in seconds
+
+**Example Queries:**
+```promql
+# Average time to resolve
+rate(itsm_ticket_time_to_resolve_seconds_sum[1h])
+  / rate(itsm_ticket_time_to_resolve_seconds_count[1h])
+```
+
+---
+
+## Grafana Dashboard
+
+A pre-built Grafana dashboard is available at `deploy/docker/config/grafana/dashboards/itsm_analytics.json`.
+
+### Dashboard Panels
+
+#### Panel 1: Ticket Creation Rate
+**Type:** Time Series  
+**Query:**
+```promql
+sum by (platform, outcome) (
+  rate(itsm_ticket_creation_total[5m])
+)
+```
+**Description:** Shows ticket creation rate by platform with success/failure breakdown
+
+---
+
+#### Panel 2: Duration Percentiles
+**Type:** Time Series  
+**Queries:**
+```promql
+# p50
+histogram_quantile(0.50, sum by (le, platform) (
+  rate(itsm_ticket_creation_duration_seconds_bucket[5m])
+))
+
+# p95
+histogram_quantile(0.95, sum by (le, platform) (
+  rate(itsm_ticket_creation_duration_seconds_bucket[5m])
+))
+
+# p99
+histogram_quantile(0.99, sum by (le, platform) (
+  rate(itsm_ticket_creation_duration_seconds_bucket[5m])
+))
+```
+**Thresholds:** Green <2s, Yellow <5s, Red ≥5s
+
+---
+
+#### Panel 3: Error Rate
+**Type:** Area Chart  
+**Query:**
+```promql
+sum by (platform) (
+  rate(itsm_ticket_creation_total{outcome="failure"}[5m])
+) / sum by (platform) (
+  rate(itsm_ticket_creation_total[5m])
+) * 100
+```
+**Thresholds:** Green <1%, Yellow <5%, Orange <10%, Red ≥10%
+
+---
+
+#### Panel 4: Retry Attempts
+**Type:** Stacked Bar Chart  
+**Query:**
+```promql
+sum by (platform) (
+  increase(itsm_ticket_retry_attempts_total[5m])
+)
+```
+
+---
+
+#### Panel 5: Top Validation Errors
+**Type:** Donut Chart  
+**Query:**
+```promql
+topk(10, sum by (platform, field) (
+  itsm_validation_errors_total
+))
+```
+
+---
+
+#### Panel 6: Template Rendering Errors
+**Type:** Bar Chart  
+**Query:**
+```promql
+sum by (template_name) (
+  itsm_template_rendering_errors_total
+)
+```
+
+---
+
+#### Panel 7: Operations Summary
+**Type:** Gauge  
+**Metrics:**
+- Total tickets created (last 1h)
+- Error rate (%)
+- Average duration (seconds)
+- Total retries
+- Validation errors
+
+---
+
+## Prometheus Alerts
+
+Pre-configured alerts are available in `deploy/docker/config/alert_rules.yml`.
+
+### Alert: HighITSMErrorRate
+**Severity:** Warning  
+**Condition:** Error rate > 5% for 5 minutes  
+**Query:**
+```promql
+sum by (platform) (
+  rate(itsm_ticket_creation_total{outcome="failure"}[5m])
+) / sum by (platform) (
+  rate(itsm_ticket_creation_total[5m])
+) > 0.05
+```
+**Runbook:** Check ITSM platform status, review logs, verify credentials
+
+---
+
+### Alert: CriticalITSMErrorRate
+**Severity:** Critical  
+**Condition:** Error rate > 25% for 2 minutes  
+**Action:** Immediate investigation required
+
+---
+
+### Alert: ExcessiveITSMRetries
+**Severity:** Warning  
+**Condition:** >50 retries/minute for 5 minutes  
+**Action:** Check network connectivity, external service status
+
+---
+
+### Alert: ValidationFailureSpike
+**Severity:** Warning  
+**Condition:** >10 validation errors/minute for 3 minutes  
+**Action:** Review recent payload changes, check template configurations
+
+---
+
+### Alert: TemplateRenderingFailures
+**Severity:** Warning  
+**Condition:** Any template rendering errors for 1 minute  
+**Action:** Review template configuration and variable inputs
+
+---
+
+### Alert: SlowITSMTicketCreation
+**Severity:** Warning  
+**Condition:** p95 latency > 5 seconds for 5 minutes  
+**Action:** Check external service performance, review timeout settings
+
+---
+
+### Alert: NoITSMActivity
+**Severity:** Info  
+**Condition:** No tickets created for 30 minutes  
+**Action:** Verify expected activity levels, check feature toggles
+
+---
+
 ## Performance Considerations
 
 - **Ticket Creation**: ~1-3 seconds per platform

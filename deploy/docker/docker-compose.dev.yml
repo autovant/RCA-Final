@@ -1,0 +1,31 @@
+# Development overrides for docker-compose
+# Use with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  rca_core:
+    # Remove read-only restriction for development
+    read_only: false
+    
+    # Mount source code for live changes
+    volumes:
+      - ../../core:/app/core
+      - ../../apps:/app/apps
+      - ../uploads:/app/uploads
+      - ../reports:/app/reports
+      - ../logs:/app/logs
+      - ../watch-folder:/app/watch-folder
+    
+    # Override command without reload to avoid file watcher permission issues
+    command: >
+      sh -c "
+        cd /app &&
+        uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+      "
+    
+    # Development environment variables
+    environment:
+      DEBUG: "true"
+      LOG_LEVEL: "DEBUG"
+      ENVIRONMENT: "development"

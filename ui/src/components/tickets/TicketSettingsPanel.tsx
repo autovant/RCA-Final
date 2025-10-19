@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { Settings, Save, AlertCircle, CheckCircle2, Info } from 'lucide-react';
+import React, { useEffect, useId, useState } from 'react';
+import { Settings, Save, CheckCircle2, Info } from 'lucide-react';
 import { useTicketStore } from '@/store/ticketStore';
+import { Alert, Button, Card } from '@/components/ui';
 
 export const TicketSettingsPanel: React.FC = () => {
   const { toggleState, loading, loadToggleState, updateToggleState } = useTicketStore();
-  
+
   const [localState, setLocalState] = useState({
     servicenow_enabled: false,
     jira_enabled: false,
@@ -15,6 +16,13 @@ export const TicketSettingsPanel: React.FC = () => {
 
   const [hasChanges, setHasChanges] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  const servicenowTitleId = useId();
+  const servicenowToggleId = useId();
+  const jiraTitleId = useId();
+  const jiraToggleId = useId();
+  const dualModeTitleId = useId();
+  const dualModeToggleId = useId();
 
   useEffect(() => {
     loadToggleState();
@@ -49,169 +57,221 @@ export const TicketSettingsPanel: React.FC = () => {
   const bothEnabled = localState.servicenow_enabled && localState.jira_enabled;
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-          <Settings className="w-5 h-5 text-blue-600" />
+    <Card className="space-y-6 p-6 md:p-8">
+      <div className="flex items-center gap-4 rounded-xl border border-dark-border/60 bg-dark-bg-tertiary/60 p-4">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-fluent-blue-500/10 text-fluent-blue-200">
+          <Settings className="h-5 w-5" />
         </div>
         <div>
-          <h3 className="text-lg font-semibold text-gray-900">ITSM Integration Settings</h3>
-          <p className="text-sm text-gray-500">Configure ServiceNow and Jira ticket creation</p>
+          <h3 className="text-lg font-semibold text-dark-text-primary">ITSM Integration Settings</h3>
+          <p className="text-sm text-dark-text-secondary">Configure ServiceNow and Jira ticket creation.</p>
         </div>
       </div>
 
       <div className="space-y-6">
-        {/* ServiceNow Toggle */}
-        <div className="border border-gray-200 rounded-lg p-4">
-          <div className="flex items-start justify-between">
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-2">
+        <div className="rounded-xl border border-dark-border/60 bg-dark-bg-tertiary/60 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-dark-text-primary">
                 <span className="text-2xl">🎫</span>
-                <h4 className="text-base font-semibold text-gray-900">ServiceNow</h4>
+                <h4 id={servicenowTitleId} className="text-base font-semibold">ServiceNow</h4>
               </div>
-              <p className="text-sm text-gray-600 mb-3">
-                Automatically create incidents in ServiceNow with full field mapping including assignment
-                groups, configuration items, and priority levels.
+              <p className="text-sm text-dark-text-secondary">
+                Automatically create incidents with assignment groups, configuration items, and priority
+                mappings aligned to your ITSM workflow.
               </p>
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <Info className="w-3.5 h-3.5" />
-                <span>Requires ServiceNow credentials in environment configuration</span>
+              <div className="flex items-center gap-2 text-xs text-dark-text-tertiary">
+                <Info className="h-3.5 w-3.5" />
+                <span>Requires ServiceNow credentials in environment configuration.</span>
               </div>
             </div>
-            <label className="relative inline-flex items-center cursor-pointer ml-4">
+            <label
+              htmlFor={servicenowToggleId}
+              className="relative inline-flex h-7 w-12 cursor-pointer items-center rounded-full border border-dark-border/60 bg-dark-bg-primary transition focus-within:outline-none focus-within:ring-2 focus-within:ring-fluent-success/50"
+            >
               <input
+                id={servicenowToggleId}
                 type="checkbox"
+                className="peer sr-only"
                 checked={localState.servicenow_enabled}
-                onChange={(e) => handleToggleChange('servicenow_enabled', e.target.checked)}
-                className="sr-only peer"
+                onChange={() => handleToggleChange('servicenow_enabled', !localState.servicenow_enabled)}
+                aria-labelledby={servicenowTitleId}
               />
-              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              <span
+                className={`absolute inset-0 rounded-full transition ${
+                  localState.servicenow_enabled
+                    ? 'border border-fluent-success/60 bg-fluent-success/30'
+                    : 'border border-dark-border/60 bg-dark-bg-primary'
+                }`}
+              />
+              <span
+                className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-dark-text-tertiary shadow-fluent transition-transform duration-200 ease-out ${
+                  localState.servicenow_enabled ? 'translate-x-5 bg-fluent-success' : 'translate-x-0'
+                }`}
+              />
             </label>
           </div>
         </div>
 
-        {/* Jira Toggle */}
-        <div className="border border-gray-200 rounded-lg p-4">
-          <div className="flex items-start justify-between">
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-2">
+        <div className="rounded-xl border border-dark-border/60 bg-dark-bg-tertiary/60 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-dark-text-primary">
                 <span className="text-2xl">📊</span>
-                <h4 className="text-base font-semibold text-gray-900">Jira</h4>
+                <h4 id={jiraTitleId} className="text-base font-semibold">Jira</h4>
               </div>
-              <p className="text-sm text-gray-600 mb-3">
-                Create issues in Jira with customizable project keys, issue types, priorities, labels, and
-                component assignments for comprehensive project tracking.
+              <p className="text-sm text-dark-text-secondary">
+                Create issues with customizable project keys, workflows, labels, and linked automation cues.
               </p>
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <Info className="w-3.5 h-3.5" />
-                <span>Supports both Jira Cloud and Server/Data Center editions</span>
+              <div className="flex items-center gap-2 text-xs text-dark-text-tertiary">
+                <Info className="h-3.5 w-3.5" />
+                <span>Supports Jira Cloud and Server / Data Center editions.</span>
               </div>
             </div>
-            <label className="relative inline-flex items-center cursor-pointer ml-4">
+            <label
+              htmlFor={jiraToggleId}
+              className="relative inline-flex h-7 w-12 cursor-pointer items-center rounded-full border border-dark-border/60 bg-dark-bg-primary transition focus-within:outline-none focus-within:ring-2 focus-within:ring-fluent-blue-500/50"
+            >
               <input
+                id={jiraToggleId}
                 type="checkbox"
+                className="peer sr-only"
                 checked={localState.jira_enabled}
-                onChange={(e) => handleToggleChange('jira_enabled', e.target.checked)}
-                className="sr-only peer"
+                onChange={() => handleToggleChange('jira_enabled', !localState.jira_enabled)}
+                aria-labelledby={jiraTitleId}
               />
-              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              <span
+                className={`absolute inset-0 rounded-full transition ${
+                  localState.jira_enabled
+                    ? 'border border-fluent-blue-500/60 bg-fluent-blue-500/30'
+                    : 'border border-dark-border/60 bg-dark-bg-primary'
+                }`}
+              />
+              <span
+                className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-dark-text-tertiary shadow-fluent transition-transform duration-200 ease-out ${
+                  localState.jira_enabled ? 'translate-x-5 bg-fluent-blue-500' : 'translate-x-0'
+                }`}
+              />
             </label>
           </div>
         </div>
 
-        {/* Dual Mode Toggle */}
         {bothEnabled && (
-          <div className="border-2 border-blue-200 bg-blue-50 rounded-lg p-4">
-            <div className="flex items-start justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-2">
+          <div className="rounded-xl border border-fluent-blue-500/40 bg-fluent-blue-500/10 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-dark-text-primary">
                   <span className="text-2xl">🔗</span>
-                  <h4 className="text-base font-semibold text-blue-900">Dual-Tracking Mode</h4>
+                  <h4 id={dualModeTitleId} className="text-base font-semibold">Dual-Tracking Mode</h4>
                 </div>
-                <p className="text-sm text-blue-800 mb-3">
-                  When enabled, Jira issues will automatically reference their linked ServiceNow incidents,
-                  creating a unified tracking experience across both platforms.
+                <p className="text-sm text-dark-text-secondary">
+                  Link Jira issues to their ServiceNow counterparts automatically for unified triage and status.
                 </p>
-                <div className="flex items-center gap-2 text-xs text-blue-700">
-                  <Info className="w-3.5 h-3.5" />
-                  <span>Creates bidirectional references for complete incident tracking</span>
+                <div className="flex items-center gap-2 text-xs text-dark-text-tertiary">
+                  <Info className="h-3.5 w-3.5" />
+                  <span>Creates bidirectional references across both systems.</span>
                 </div>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer ml-4">
+              <label
+                htmlFor={dualModeToggleId}
+                className="relative inline-flex h-7 w-12 cursor-pointer items-center rounded-full border border-fluent-blue-500/40 bg-dark-bg-primary transition focus-within:outline-none focus-within:ring-2 focus-within:ring-fluent-blue-500/50"
+              >
                 <input
+                  id={dualModeToggleId}
                   type="checkbox"
+                  className="peer sr-only"
                   checked={localState.dual_mode}
-                  onChange={(e) => handleToggleChange('dual_mode', e.target.checked)}
-                  className="sr-only peer"
+                  onChange={() => handleToggleChange('dual_mode', !localState.dual_mode)}
+                  aria-labelledby={dualModeTitleId}
                 />
-                <div className="w-11 h-6 bg-blue-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-blue-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                <span
+                  className={`absolute inset-0 rounded-full transition ${
+                    localState.dual_mode
+                      ? 'border border-fluent-blue-500/60 bg-fluent-blue-500/30'
+                      : 'border border-fluent-blue-500/30 bg-dark-bg-primary'
+                  }`}
+                />
+                <span
+                  className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-dark-text-tertiary shadow-fluent transition-transform duration-200 ease-out ${
+                    localState.dual_mode ? 'translate-x-5 bg-fluent-blue-400' : 'translate-x-0'
+                  }`}
+                />
               </label>
             </div>
           </div>
         )}
 
-        {/* Current Configuration Summary */}
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-          <h5 className="text-sm font-semibold text-gray-900 mb-3">Active Configuration</h5>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600">ServiceNow Integration:</span>
-              <span className={`font-medium ${localState.servicenow_enabled ? 'text-green-600' : 'text-gray-400'}`}>
-                {localState.servicenow_enabled ? '✓ Enabled' : '✗ Disabled'}
+        <div className="rounded-xl border border-dark-border/60 bg-dark-bg-tertiary/60 p-5">
+          <h5 className="text-sm font-semibold text-dark-text-primary">Active Configuration</h5>
+          <div className="mt-3 space-y-2 text-sm text-dark-text-secondary">
+            <div className="flex items-center justify-between">
+              <span>ServiceNow Integration</span>
+              <span
+                className={`badge ${
+                  localState.servicenow_enabled
+                    ? 'border border-fluent-success/40 bg-fluent-success/15 text-green-300'
+                    : 'border border-dark-border/60 bg-dark-bg-primary text-dark-text-tertiary'
+                }`}
+              >
+                {localState.servicenow_enabled ? 'Enabled' : 'Disabled'}
               </span>
             </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600">Jira Integration:</span>
-              <span className={`font-medium ${localState.jira_enabled ? 'text-green-600' : 'text-gray-400'}`}>
-                {localState.jira_enabled ? '✓ Enabled' : '✗ Disabled'}
+            <div className="flex items-center justify-between">
+              <span>Jira Integration</span>
+              <span
+                className={`badge ${
+                  localState.jira_enabled
+                    ? 'border border-fluent-blue-500/40 bg-fluent-blue-500/15 text-fluent-blue-200'
+                    : 'border border-dark-border/60 bg-dark-bg-primary text-dark-text-tertiary'
+                }`}
+              >
+                {localState.jira_enabled ? 'Enabled' : 'Disabled'}
               </span>
             </div>
             {bothEnabled && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-600">Dual-Tracking Mode:</span>
-                <span className={`font-medium ${localState.dual_mode ? 'text-blue-600' : 'text-gray-400'}`}>
-                  {localState.dual_mode ? '✓ Active' : '✗ Inactive'}
+              <div className="flex items-center justify-between">
+                <span>Dual-Tracking Mode</span>
+                <span
+                  className={`badge ${
+                    localState.dual_mode
+                      ? 'border border-fluent-blue-500/40 bg-fluent-blue-500/15 text-fluent-blue-200'
+                      : 'border border-dark-border/60 bg-dark-bg-primary text-dark-text-tertiary'
+                  }`}
+                >
+                  {localState.dual_mode ? 'Active' : 'Inactive'}
                 </span>
               </div>
             )}
           </div>
         </div>
 
-        {/* Warning Messages */}
         {!localState.servicenow_enabled && !localState.jira_enabled && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" />
-            <div>
-              <h5 className="text-sm font-semibold text-yellow-900 mb-1">No Integrations Enabled</h5>
-              <p className="text-sm text-yellow-800">
-                Enable at least one integration to create tickets automatically. Tickets will be created in
-                preview mode only when both integrations are disabled.
-              </p>
-            </div>
-          </div>
+          <Alert variant="warning" title="No integrations enabled">
+            Enable at least one integration to create tickets automatically. Tickets remain in preview mode when
+            both integrations are disabled.
+          </Alert>
         )}
 
-        {/* Save Button */}
-        <div className="flex items-center justify-between pt-4 border-t border-gray-200">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between border-t border-dark-border/60 pt-4">
+          <div className="flex items-center gap-2 text-sm text-green-300">
             {saveSuccess && (
               <>
-                <CheckCircle2 className="w-5 h-5 text-green-600" />
-                <span className="text-sm text-green-600 font-medium">Settings saved successfully</span>
+                <CheckCircle2 className="h-5 w-5" />
+                <span>Settings saved successfully</span>
               </>
             )}
           </div>
-          <button
+          <Button
             onClick={handleSave}
             disabled={!hasChanges || loading}
-            className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+            loading={loading}
+            icon={<Save className="h-4 w-4" />}
           >
-            <Save className="w-4 h-4" />
-            {loading ? 'Saving...' : 'Save Changes'}
-          </button>
+            {loading ? 'Saving…' : 'Save Changes'}
+          </Button>
         </div>
       </div>
-    </div>
+    </Card>
   );
 };
 

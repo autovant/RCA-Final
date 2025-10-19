@@ -22,7 +22,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies with security audit
-RUN npm ci --only=production --no-audit --no-fund && \
+RUN npm install --omit=dev --no-audit --no-fund && \
     npm cache clean --force
 
 # Copy source code

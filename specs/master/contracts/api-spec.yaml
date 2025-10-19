@@ -1,0 +1,462 @@
+openapi: 3.0.3
+info:
+  title: ITSM Integration API - Advanced Features
+  description: |
+    API endpoints for advanced ITSM integration features including:
+    - Template-based ticket creation
+    - Payload validation
+    - Retry logic with exponential backoff
+    - Comprehensive metrics and SLA tracking
+  version: 1.0.0
+  contact:
+    name: RCA Insight Engine Team
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+  - url: https://api.example.com/api/v1
+    description: Production
+
+tags:
+  - name: Templates
+    description: Ticket template operations
+  - name: Tickets
+    description: Ticket creation and management
+
+paths:
+  /tickets/templates:
+    get:
+      tags:
+        - Templates
+      summary: List available ticket templates
+      description: |
+        Retrieve a list of all available ticket templates with metadata.
+        Optionally filter by platform.
+      operationId: listTemplates
+      parameters:
+        - name: platform
+          in: query
+          description: Filter templates by platform
+          required: false
+          schema:
+            type: string
+            enum: [servicenow, jira]
+      responses:
+        '200':
+          description: Successfully retrieved templates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateListResponse'
+              examples:
+                allTemplates:
+                  summary: All templates
+                  value:
+                    templates:
+                      - name: rca_incident
+                        platform: servicenow
+                        description: Template for RCA investigation tickets
+                        required_variables: [job_name, job_id, severity, details]
+                        field_count: 6
+                      - name: critical_alert
+                        platform: servicenow
+                        description: Template for critical alerts
+                        required_variables: [alert_name, timestamp, alert_details]
+                        field_count: 5
+                      - name: rca_issue
+                        platform: jira
+                        description: Jira issue template for RCA
+                        required_variables: [job_name, job_id, severity, details]
+                        field_count: 5
+                    count: 3
+                servicenowOnly:
+                  summary: ServiceNow templates only
+                  value:
+                    templates:
+                      - name: rca_incident
+                        platform: servicenow
+                        description: Template for RCA investigation tickets
+                        required_variables: [job_name, job_id, severity, details]
+                        field_count: 6
+                    count: 1
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tickets/from-template:
+    post:
+      tags:
+        - Tickets
+      summary: Create ticket from template
+      description: |
+        Create a new ticket using a named template with variable substitution.
+        Automatically validates payload and includes retry logic.
+      operationId: createFromTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFromTemplateRequest'
+            examples:
+              servicenowExample:
+                summary: ServiceNow RCA incident
+                value:
+                  job_id: "job-abc123"
+                  platform: servicenow
+                  template_name: rca_incident
+                  variables:
+                    custom_note: "Additional context for this incident"
+                  dry_run: false
+              jiraExample:
+                summary: Jira production incident
+                value:
+                  job_id: "job-xyz789"
+                  platform: jira
+                  template_name: production_incident
+                  variables:
+                    impact_statement: "Payment processing delayed"
+                  profile_name: "jira_prod"
+                  dry_run: false
+      responses:
+        '201':
+          description: Ticket created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateFromTemplateResponse'
+              examples:
+                success:
+                  summary: Successful creation
+                  value:
+                    ticket_id: "INC0012345"
+                    platform: servicenow
+                    status: "New"
+                    url: "https://instance.service-now.com/nav_to.do?uri=incident.do?sys_id=abc123"
+                    dry_run: false
+                    template_name: rca_incident
+                    created_at: "2025-10-12T14:30:00Z"
+                    metadata:
+                      sys_id: "abc123"
+                      retry_metadata:
+                        retry_attempts: 1
+                        retry_delays: [5.0]
+                        retryable_errors:
+                          - attempt: 1
+                            status_code: 503
+                            message: "Service temporarily unavailable"
+                      template_variables:
+                        job_id: "job-abc123"
+                        severity: "high"
+        '400':
+          description: Validation error or invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+              examples:
+                templateNotFound:
+                  summary: Template not found
+                  value:
+                    error_code: "template_not_found"
+                    message: "Template 'invalid_template' not found for platform 'servicenow'"
+                    details:
+                      platform: servicenow
+                      template_name: invalid_template
+                missingVariables:
+                  summary: Missing required variables
+                  value:
+                    error_code: "template_render_error"
+                    message: "Missing required variables for template 'rca_incident': job_name, severity"
+                    details:
+                      template_name: rca_incident
+                      missing_variables: [job_name, severity]
+                validationFailed:
+                  summary: Payload validation failed
+                  value:
+                    error_code: "validation_failed"
+                    message: "Ticket payload validation failed"
+                    details:
+                      valid: false
+                      errors:
+                        summary:
+                          - error_code: "required_field_missing"
+                            message: "Required field 'summary' is missing from payload."
+                            details: {}
+                        priority:
+                          - error_code: "invalid_enum_value"
+                            message: "Field 'priority' has invalid value '10'. Allowed values: 1, 2, 3, 4, 5."
+                            details:
+                              allowed_values: ["1", "2", "3", "4", "5"]
+                              provided_value: "10"
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: ITSM platform error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                platformError:
+                  summary: ITSM API error
+                  value:
+                    error_code: "itsm_api_error"
+                    message: "ServiceNow API responded with 502: Bad Gateway"
+                    details:
+                      platform: servicenow
+                      retry_attempts: 3
+                      final_error: "All retry attempts exhausted"
+
+components:
+  schemas:
+    TemplateMetadata:
+      type: object
+      required:
+        - name
+        - platform
+        - required_variables
+        - field_count
+      properties:
+        name:
+          type: string
+          description: Template name
+          example: "rca_incident"
+        platform:
+          type: string
+          enum: [servicenow, jira]
+          description: Target ITSM platform
+          example: "servicenow"
+        description:
+          type: string
+          nullable: true
+          description: Human-readable template description
+          example: "Template for RCA investigation tickets"
+        required_variables:
+          type: array
+          items:
+            type: string
+          description: List of required variable names
+          example: ["job_name", "job_id", "severity", "details"]
+        field_count:
+          type: integer
+          description: Number of fields in the template
+          example: 6
+
+    TemplateListResponse:
+      type: object
+      required:
+        - templates
+        - count
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: '#/components/schemas/TemplateMetadata'
+        count:
+          type: integer
+          description: Total number of templates
+          example: 4
+
+    CreateFromTemplateRequest:
+      type: object
+      required:
+        - job_id
+        - platform
+        - template_name
+      properties:
+        job_id:
+          type: string
+          description: Job identifier to associate with the ticket
+          example: "job-abc123"
+        platform:
+          type: string
+          enum: [servicenow, jira]
+          description: Target ITSM platform
+          example: "servicenow"
+        template_name:
+          type: string
+          description: Name of the template to use
+          example: "rca_incident"
+        variables:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Additional variables for template substitution
+          example:
+            custom_field: "value"
+        profile_name:
+          type: string
+          nullable: true
+          description: ITSM profile name for credentials
+          example: "servicenow_prod"
+        dry_run:
+          type: boolean
+          default: true
+          description: If true, validate and prepare ticket but don't create in ITSM platform
+          example: false
+
+    CreateFromTemplateResponse:
+      type: object
+      required:
+        - ticket_id
+        - platform
+        - status
+        - dry_run
+        - template_name
+        - created_at
+      properties:
+        ticket_id:
+          type: string
+          description: Platform-specific ticket identifier
+          example: "INC0012345"
+        platform:
+          type: string
+          enum: [servicenow, jira]
+          description: ITSM platform
+          example: "servicenow"
+        status:
+          type: string
+          description: Current ticket status
+          example: "New"
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: Direct link to ticket in ITSM platform
+          example: "https://instance.service-now.com/nav_to.do?uri=incident.do?sys_id=abc123"
+        dry_run:
+          type: boolean
+          description: Whether ticket was created in dry-run mode
+          example: false
+        template_name:
+          type: string
+          description: Template used for creation
+          example: "rca_incident"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when ticket was created
+          example: "2025-10-12T14:30:00Z"
+        metadata:
+          type: object
+          description: Additional metadata including retry info and template variables
+          properties:
+            retry_metadata:
+              $ref: '#/components/schemas/RetryMetadata'
+            template_variables:
+              type: object
+              additionalProperties: true
+              description: Variables used in template rendering
+
+    RetryMetadata:
+      type: object
+      properties:
+        retry_attempts:
+          type: integer
+          description: Number of retry attempts made
+          example: 2
+        retry_delays:
+          type: array
+          items:
+            type: number
+            format: float
+          description: Delay before each retry in seconds
+          example: [5.0, 10.0]
+        retryable_errors:
+          type: array
+          items:
+            type: object
+            properties:
+              attempt:
+                type: integer
+              status_code:
+                type: integer
+              message:
+                type: string
+          description: Errors that triggered retries
+        final_error:
+          type: string
+          nullable: true
+          description: Final error message if all retries failed
+
+    ValidationErrorResponse:
+      type: object
+      required:
+        - error_code
+        - message
+      properties:
+        error_code:
+          type: string
+          description: Machine-readable error code
+          example: "validation_failed"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Ticket payload validation failed"
+        details:
+          type: object
+          description: Additional error context
+          properties:
+            valid:
+              type: boolean
+            errors:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    error_code:
+                      type: string
+                    message:
+                      type: string
+                    details:
+                      type: object
+
+    ErrorResponse:
+      type: object
+      required:
+        - error_code
+        - message
+      properties:
+        error_code:
+          type: string
+          description: Machine-readable error code
+          example: "internal_error"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "An unexpected error occurred"
+        details:
+          type: object
+          nullable: true
+          description: Additional error context
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []

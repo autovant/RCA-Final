@@ -9,7 +9,8 @@ types are supported and validate metadata before attempting an upload.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, cast
 
 from fastapi import (
     APIRouter,
@@ -20,13 +21,14 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field, UUID4, validator
-from sqlalchemy import select
+from pydantic import BaseModel, Field, UUID4, validator, ConfigDict
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
+from core.config.feature_flags import COMPRESSED_INGESTION
 from core.db.database import get_db
-from core.db.models import File as FileModel, User
+from core.db.models import File as FileModel, Job, User
 from core.jobs.service import JobService
 from core.files.service import FileService
 from core.security.auth import get_current_user
@@ -35,6 +37,13 @@ from core.metrics import MetricsCollector
 router = APIRouter()
 job_service = JobService()
 file_service = FileService()
+
+
+def _resolve_allowed_types() -> List[str]:
+    base_types = {ext.lower() for ext in settings.files.ALLOWED_FILE_TYPES}
+    if settings.feature_flags.is_enabled(COMPRESSED_INGESTION.key):
+        base_types.update({"gz", "zip"})
+    return sorted(base_types)
 
 class SupportedFileTypesResponse(BaseModel):
     """Response containing the whitelisted extensions."""
@@ -66,27 +75,26 @@ class FileValidationResponse(BaseModel):
 class FileResponse(BaseModel):
     """Representation of a stored file."""
 
-    id: str
-    job_id: str
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID4
+    job_id: UUID4
     filename: str
     original_filename: str
     content_type: Optional[str]
     file_size: int
     checksum: str
     processed: bool
-    processed_at: Optional[str]
-    created_at: Optional[str]
-    metadata: Optional[Dict[str, Any]]
-
-    class Config:
-        from_attributes = True
+    processed_at: Optional[datetime]
+    created_at: Optional[datetime]
+    metadata: Optional[Dict[str, Any]] = None
 
 
 @router.get("/supported-types", response_model=SupportedFileTypesResponse)
 async def supported_file_types() -> SupportedFileTypesResponse:
     """Return the list of allowed file types and the current size limit."""
     return SupportedFileTypesResponse(
-        allowed_types=settings.files.ALLOWED_FILE_TYPES,
+        allowed_types=_resolve_allowed_types(),
         max_file_size_mb=settings.files.MAX_FILE_SIZE_MB,
     )
 
@@ -102,7 +110,8 @@ async def validate_file(metadata: FileValidationRequest) -> FileValidationRespon
     reasons: List[str] = []
 
     extension = Path(metadata.filename).suffix.lstrip(".").lower()
-    if extension not in [ext.lower() for ext in settings.files.ALLOWED_FILE_TYPES]:
+    allowed_extensions = set(_resolve_allowed_types())
+    if extension not in allowed_extensions:
         reasons.append(f"Unsupported file extension: .{extension or '<none>'}")
 
     max_bytes = settings.files.MAX_FILE_SIZE_MB * 1024 * 1024
@@ -117,35 +126,109 @@ async def validate_file(metadata: FileValidationRequest) -> FileValidationRespon
 
 @router.post("/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file(
-    job_id: UUID4 = Form(...),
+    job_id: Optional[UUID4] = Form(None),
     file: UploadFile = UploadDependency(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FileResponse:
     """Persist an uploaded file and attach it to the specified job."""
-    job = await job_service.get_job(str(job_id))
-    if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job not found",
+    job_obj: Optional[Job] = None
+    job_id_str: Optional[str] = None
+
+    if job_id is not None:
+        job_obj = await db.get(Job, str(job_id))
+        if job_obj is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found",
+            )
+        job_id_str = str(job_obj.id)
+    else:
+        default_provider = settings.llm.DEFAULT_PROVIDER or "copilot"
+        default_model = (
+            settings.llm.OLLAMA_MODEL
+            if default_provider == "ollama"
+            else "gpt-4"
         )
 
+        job_obj = Job(
+            job_type="rca_analysis",
+            user_id=str(current_user.id),
+            input_manifest={"files": []},
+            provider=default_provider,
+            model=default_model,
+            priority=0,
+            status="draft",  # Start as draft to prevent worker from picking up before file is attached
+            source={
+                "created_via": "file-upload",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        db.add(job_obj)
+        await db.flush()
+        job_id_str = str(job_obj.id)
+        await job_service.create_job_event(
+            job_id_str,
+            "created",
+            {"input_manifest": job_obj.input_manifest},
+            session=db,
+        )
+
+    assert job_obj is not None and job_id_str is not None  # for type checkers
+
     user_id = str(current_user.id)
-    if job.user_id != user_id and not current_user.is_superuser:
+    job_owner_id = str(getattr(job_obj, "user_id", "") or "")
+    is_superuser = bool(getattr(current_user, "is_superuser", False))
+    if job_owner_id and job_owner_id != user_id and not is_superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not permitted to upload files for this job",
         )
 
+    manifest = job_obj.input_manifest if isinstance(job_obj.input_manifest, dict) else {}
+    source = job_obj.source if isinstance(job_obj.source, dict) else {}
+    telemetry_tenant_id = manifest.get("tenant_id")
+    platform_label = (
+        source.get("platform")
+        or manifest.get("platform")
+        or source.get("created_via")
+        or "api"
+    )
+
     stored = await file_service.ingest_upload(
         db,
-        str(job_id),
+        job_id_str,
         file,
         uploader=user_id,
+        tenant_id=telemetry_tenant_id,
+        platform=platform_label,
+    )
+
+    manifest_files = list(manifest.get("files") or [])
+    stored_id = str(stored.id)
+    if stored_id not in manifest_files:
+        manifest_files.append(stored_id)
+    manifest["files"] = manifest_files
+    
+    # Prepare update values
+    update_values = {
+        "input_manifest": manifest,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    
+    # If job was created in draft status (no job_id provided), transition to pending now that file is attached
+    job_status = str(getattr(job_obj, "status", ""))
+    if job_status == "draft":
+        update_values["status"] = "pending"
+    
+    await db.execute(
+        update(Job)
+        .where(Job.id == job_id_str)
+        .values(**update_values)
     )
 
     await job_service.create_job_event(
-        str(job_id),
+        job_id_str,
         "file-uploaded",
         {
             "file_id": str(stored.id),
@@ -155,6 +238,19 @@ async def upload_file(
         },
         session=db,
     )
+    
+    # If job was transitioned from draft to pending, emit a ready event
+    if job_status == "draft":
+        await job_service.create_job_event(
+            job_id_str,
+            "ready",
+            {
+                "status": "pending",
+                "files_attached": len(manifest_files),
+                "message": "Job ready for processing",
+            },
+            session=db,
+        )
 
     await db.commit()
     await job_service.publish_session_events(db)
@@ -177,7 +273,9 @@ async def list_job_files(
         )
 
     user_id = str(current_user.id)
-    if job.user_id != user_id and not current_user.is_superuser:
+    job_owner_id = str(getattr(job, "user_id", "") or "")
+    is_superuser = bool(getattr(current_user, "is_superuser", False))
+    if job_owner_id != user_id and not is_superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not permitted to access files for this job",

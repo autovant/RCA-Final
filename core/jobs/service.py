@@ -6,6 +6,7 @@ Business logic for job processing, state management, and event tracking.
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+import uuid
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, func, or_, select, update
@@ -18,6 +19,7 @@ from core.db.models import (
     ConversationTurn,
     Document,
     File,
+    IncidentFingerprint,
     Job,
     JobEvent,
     Ticket,
@@ -124,6 +126,7 @@ class JobService:
         model_config: Optional[Dict[str, Any]] = None,
         ticketing: Optional[Dict[str, Any]] = None,
         source: Optional[Dict[str, Any]] = None,
+        file_ids: Optional[List[str]] = None,
     ) -> Job:
         """Create a new analysis job."""
         async with self._session_factory() as session:
@@ -142,6 +145,20 @@ class JobService:
             
             session.add(job)
             await session.flush()
+            
+            # Attach files if provided
+            if file_ids:
+                from core.db.models import File
+                logger.info(f"Attaching {len(file_ids)} files to job {job.id}: {file_ids}")
+                for file_id in file_ids:
+                    file_obj = await session.get(File, file_id)
+                    if file_obj:
+                        logger.info(f"Attached file {file_id} to job {job.id}")
+                        file_obj.job_id = job.id
+                    else:
+                        logger.warning(f"File {file_id} not found in database!")
+            else:
+                logger.warning(f"No file_ids provided for job {job.id}")
             
             # Create initial event
             await self.create_job_event(
@@ -168,6 +185,7 @@ class JobService:
                     selectinload(Job.documents),
                     selectinload(Job.conversation_turns),
                     selectinload(Job.tickets),
+                    selectinload(Job.fingerprint),
                 )
                 .where(Job.id == job_id)
             )
@@ -238,6 +256,39 @@ class JobService:
             return job
 
             return job
+
+    async def get_job_fingerprint(self, job_id: str) -> Optional[IncidentFingerprint]:
+        """Return the fingerprint associated with a job when present."""
+
+        try:
+            job_uuid = uuid.UUID(str(job_id))
+        except (ValueError, TypeError):
+            return None
+
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(IncidentFingerprint)
+                .where(IncidentFingerprint.session_id == job_uuid)
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_platform_detection(self, job_id: str) -> Optional["PlatformDetectionResult"]:
+        """Return platform detection results for a job when present."""
+        from core.db.models import PlatformDetectionResult
+
+        try:
+            job_uuid = uuid.UUID(str(job_id))
+        except (ValueError, TypeError):
+            return None
+
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PlatformDetectionResult)
+                .where(PlatformDetectionResult.job_id == job_uuid)
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
     
     async def update_job_status(self, job_id: str, status: str, data: Optional[Dict] = None):
         """Update job status."""
@@ -281,6 +332,7 @@ class JobService:
                 result = await session.execute(
                     select(Job).where(Job.id == job_id)
                 )
+                job = result.scalar_one_or_none()
                 if not job:
                     return
 
@@ -298,8 +350,6 @@ class JobService:
                     {"result": result_data},
                     session=session
                 )
-
-            await self._publish_session_events(session)
 
             await self._publish_session_events(session)
             logger.info("Completed job: %s", job_id)
