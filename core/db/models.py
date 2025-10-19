@@ -10,16 +10,21 @@ import uuid
 from typing import Any, Dict, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
     DateTime,
+    Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.ext.declarative import declarative_base
@@ -79,25 +84,48 @@ class Job(Base):
     documents = relationship(
         "Document", back_populates="job", cascade="all, delete-orphan"
     )
+    fingerprint = relationship(
+        "IncidentFingerprint",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    platform_detection = relationship(
+        "PlatformDetectionResult",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    archive_audit = relationship(
+        "ArchiveExtractionAudit",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
     conversation_turns = relationship(
         "ConversationTurn", back_populates="job", cascade="all, delete-orphan"
     )
     tickets = relationship(
         "Ticket", back_populates="job", cascade="all, delete-orphan"
     )
+    telemetry_events = relationship(
+        "UploadTelemetryEventRecord",
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_jobs_status_created_at", "status", "created_at"),
         Index("ix_jobs_user_id_status", "user_id", "status"),
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled')",
+            "status IN ('draft', 'pending', 'running', 'completed', 'failed', 'cancelled')",
             name="valid_job_status",
         ),
     )
 
     @validates("status")
     def validate_status(self, _key, value: str) -> str:
-        allowed = {"pending", "running", "completed", "failed", "cancelled"}
+        allowed = {"draft", "pending", "running", "completed", "failed", "cancelled"}
         if value not in allowed:
             raise ValueError(f"Invalid status: {value}")
         return value
@@ -150,7 +178,7 @@ class JobEvent(Base):
     job_id = Column(
         UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
-    event_type = Column(String(50), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False)  # Index defined in __table_args__
     data = Column(JSON)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -193,14 +221,14 @@ class File(Base):
     file_path = Column(String(1024), nullable=False)
     content_type = Column(String(100))
     file_size = Column(Integer, nullable=False)
-    checksum = Column(String(128), nullable=False, unique=True)
+    checksum = Column(String(128), nullable=False)
     _metadata = Column("metadata", JSON, default=dict)
 
     def __init__(self, *args, **kwargs):
         metadata = kwargs.pop("metadata", None)
         super().__init__(*args, **kwargs)
         if metadata is not None:
-            self._metadata = metadata
+            self.metadata = metadata
 
     processed = Column(Boolean, default=False, nullable=False)
     processed_at = Column(DateTime(timezone=True))
@@ -211,6 +239,11 @@ class File(Base):
     )
 
     job = relationship("Job", back_populates="files")
+    telemetry_events = relationship(
+        "UploadTelemetryEventRecord",
+        back_populates="file",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_files_job_id_created_at", "job_id", "created_at"),
@@ -239,6 +272,92 @@ class File(Base):
             if self.processed_at
             else None,
         }
+
+
+class UploadTelemetryEventRecord(Base):
+    """ORM mapping for upload telemetry events."""
+
+    __tablename__ = "upload_telemetry_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    upload_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stage = Column(String(32), nullable=False)
+    feature_flags = Column(JSONB, nullable=False, default=list)
+    status = Column(String(16), nullable=False)
+    duration_ms = Column(Integer, nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=False)
+    _metadata = Column("metadata", JSONB, nullable=False, default=dict)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    def __init__(self, *args, **kwargs):
+        metadata = kwargs.pop("metadata", None)
+        super().__init__(*args, **kwargs)
+        if metadata is not None:
+            self.metadata = metadata
+
+    job = relationship("Job", back_populates="telemetry_events")
+    file = relationship("File", back_populates="telemetry_events")
+
+    __table_args__ = (
+        CheckConstraint(
+            "duration_ms >= 0",
+            name="ck_upload_telemetry_events_duration_non_negative",
+        ),
+        Index(
+            "ix_upload_telemetry_events_tenant_stage_status_created_at",
+            "tenant_id",
+            "stage",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_upload_telemetry_events_upload_stage",
+            "upload_id",
+            "stage",
+        ),
+    )
+
+    @validates("duration_ms")
+    def _validate_duration_ms(self, _key, value: int) -> int:
+        if value is None or value < 0:
+            raise ValueError("duration_ms must be greater than or equal to zero")
+        return int(value)
+
+    @validates("started_at")
+    def _validate_started_at(self, _key, value):
+        if value is None:
+            raise ValueError("started_at must be provided")
+        completed = getattr(self, "completed_at", None)
+        if completed is not None and completed < value:
+            raise ValueError("started_at cannot be after completed_at")
+        return value
+
+    @validates("completed_at")
+    def _validate_completed_at(self, _key, value):
+        if value is None:
+            raise ValueError("completed_at must be provided")
+        started = getattr(self, "started_at", None)
+        if started is not None and value < started:
+            raise ValueError("completed_at cannot be earlier than started_at")
+        return value
+
 
 
 class Document(Base):
@@ -301,6 +420,334 @@ class Document(Base):
             "has_embedding": self.has_embedding,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class IncidentFingerprint(Base):
+    """Vector fingerprint for completed RCA sessions."""
+
+    __tablename__ = "incident_fingerprints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    embedding_vector = Column(Vector(settings.VECTOR_DIMENSION))
+    summary_text = Column(Text, nullable=False)
+    relevance_threshold = Column(Float, nullable=False, default=0.5)
+    visibility_scope = Column(
+        Enum(
+            "tenant_only",
+            "multi_tenant",
+            name="visibility_scope_enum",
+            create_type=False,
+        ),
+        nullable=False,
+        default="tenant_only",
+    )
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    fingerprint_status = Column(
+        Enum(
+            "available",
+            "degraded",
+            "missing",
+            name="fingerprint_status_enum",
+            create_type=False,
+        ),
+        nullable=False,
+        default="missing",
+    )
+    safeguard_notes = Column(JSONB, nullable=False, default=dict)
+
+    job = relationship("Job", back_populates="fingerprint")
+
+    __table_args__ = (
+        UniqueConstraint("session_id", name="uq_incident_fingerprints_session"),
+        Index(
+            "ix_incident_fingerprints_tenant_scope",
+            "tenant_id",
+            "visibility_scope",
+        ),
+        Index(
+            "ix_incident_fingerprints_status",
+            "fingerprint_status",
+        ),
+        Index("ix_incident_fingerprints_updated_at", "updated_at"),
+        Index(
+            "ix_incident_fingerprints_embedding_vector_ivfflat",
+            "embedding_vector",
+            postgresql_using="ivfflat",
+        ),
+        CheckConstraint(
+            "fingerprint_status != 'available' OR embedding_vector IS NOT NULL",
+            name="ck_incident_fingerprints_vector_required",
+        ),
+        CheckConstraint(
+            "char_length(summary_text) <= 4096",
+            name="ck_incident_fingerprints_summary_length",
+        ),
+        CheckConstraint(
+            "relevance_threshold >= 0 AND relevance_threshold <= 1",
+            name="ck_incident_fingerprints_relevance_bounds",
+        ),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "session_id": str(self.session_id),
+            "tenant_id": str(self.tenant_id),
+            "summary_text": self.summary_text,
+            "relevance_threshold": float(self.relevance_threshold or 0),
+            "visibility_scope": self.visibility_scope,
+            "fingerprint_status": self.fingerprint_status,
+            "safeguard_notes": self.safeguard_notes,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    @property
+    def is_available(self) -> bool:
+        return self.fingerprint_status == "available"
+
+
+class PlatformDetectionResult(Base):
+    """Detected platform metadata and parser outcomes."""
+
+    __tablename__ = "platform_detection_results"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    detected_platform = Column(
+        Enum(
+            "blue_prism",
+            "uipath",
+            "appian",
+            "automation_anywhere",
+            "pega",
+            "unknown",
+            name="detected_platform_enum",
+            create_type=False,
+        ),
+        nullable=False,
+        default="unknown",
+    )
+    confidence_score = Column(Numeric(5, 4), nullable=False, default=0)
+    detection_method = Column(Text, nullable=False)
+    parser_executed = Column(Boolean, nullable=False, default=False)
+    parser_version = Column(Text)
+    extracted_entities = Column(JSONB, nullable=False, default=list)
+    feature_flag_snapshot = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    job = relationship("Job", back_populates="platform_detection")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_platform_detection_results_job"),
+        Index("ix_platform_detection_results_job_id", "job_id"),
+        Index("ix_platform_detection_results_created_at", "created_at"),
+        Index(
+            "ix_platform_detection_results_platform",
+            "detected_platform",
+        ),
+        CheckConstraint(
+            "confidence_score >= 0 AND confidence_score <= 1",
+            name="ck_platform_detection_confidence_bounds",
+        ),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "job_id": str(self.job_id),
+            "detected_platform": self.detected_platform,
+            "confidence_score": float(self.confidence_score or 0),
+            "detection_method": self.detection_method,
+            "parser_executed": self.parser_executed,
+            "parser_version": self.parser_version,
+            "extracted_entities": self.extracted_entities,
+            "feature_flag_snapshot": self.feature_flag_snapshot,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ArchiveExtractionAudit(Base):
+    """Audit records for archive extraction safeguards."""
+
+    __tablename__ = "archive_extraction_audits"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    source_filename = Column(Text, nullable=False)
+    archive_type = Column(
+        Enum(
+            "zip",
+            "gz",
+            "bz2",
+            "xz",
+            "tar_gz",
+            "tar_bz2",
+            "tar_xz",
+            name="archive_type_enum",
+            create_type=False,
+        ),
+        nullable=False,
+    )
+    member_count = Column(Integer, nullable=False, default=0)
+    compressed_size_bytes = Column(BigInteger, nullable=False)
+    estimated_uncompressed_bytes = Column(BigInteger)
+    decompression_ratio = Column(Numeric(10, 2))
+    guardrail_status = Column(
+        Enum(
+            "passed",
+            "blocked_ratio",
+            "blocked_members",
+            "timeout",
+            "error",
+            name="archive_guardrail_status_enum",
+            create_type=False,
+        ),
+        nullable=False,
+        default="passed",
+    )
+    blocked_reason = Column(Text)
+    partial_members = Column(JSONB, nullable=False, default=list)
+    started_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at = Column(DateTime(timezone=True))
+
+    job = relationship("Job", back_populates="archive_audit")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_archive_extraction_audits_job"),
+        Index("ix_archive_extraction_audits_job_id", "job_id"),
+        Index(
+            "ix_archive_extraction_audits_guardrail_status",
+            "guardrail_status",
+        ),
+        Index("ix_archive_extraction_audits_completed_at", "completed_at"),
+        CheckConstraint(
+            "member_count >= 0",
+            name="ck_archive_audit_member_count_non_negative",
+        ),
+        CheckConstraint(
+            "compressed_size_bytes > 0",
+            name="ck_archive_audit_compressed_size_positive",
+        ),
+        CheckConstraint(
+            "decompression_ratio IS NULL OR decompression_ratio >= 0",
+            name="ck_archive_audit_ratio_non_negative",
+        ),
+        CheckConstraint(
+            "guardrail_status NOT IN ('blocked_ratio', 'blocked_members', 'error') OR blocked_reason IS NOT NULL",
+            name="ck_archive_audit_blocked_reason_required",
+        ),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "job_id": str(self.job_id),
+            "source_filename": self.source_filename,
+            "archive_type": self.archive_type,
+            "member_count": self.member_count,
+            "compressed_size_bytes": int(self.compressed_size_bytes or 0),
+            "estimated_uncompressed_bytes": int(
+                self.estimated_uncompressed_bytes or 0
+            ),
+            "decompression_ratio": float(self.decompression_ratio or 0),
+            "guardrail_status": self.guardrail_status,
+            "blocked_reason": self.blocked_reason,
+            "partial_members": self.partial_members,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat()
+            if self.completed_at
+            else None,
+        }
+
+    @property
+    def is_blocked(self) -> bool:
+        return self.guardrail_status.startswith("blocked") or (
+            self.guardrail_status == "timeout"
+        )
+
+
+class AnalystAuditEvent(Base):
+    """Audit log capturing cross-workspace related incident views."""
+
+    __tablename__ = "analyst_audit_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analyst_id = Column(UUID(as_uuid=True), nullable=False)
+    source_workspace_id = Column(UUID(as_uuid=True), nullable=False)
+    related_workspace_id = Column(UUID(as_uuid=True), nullable=False)
+    session_id = Column(UUID(as_uuid=True), nullable=False)
+    related_session_id = Column(UUID(as_uuid=True), nullable=False)
+    action = Column(
+        Enum(
+            "viewed_related_incident",
+            name="analyst_audit_action_enum",
+            create_type=False,
+        ),
+        nullable=False,
+    )
+    timestamp = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_analyst_audit_events_analyst_timestamp",
+            "analyst_id",
+            "timestamp",
+        ),
+        Index(
+            "ix_analyst_audit_events_session",
+            "session_id",
+            "related_session_id",
+        ),
+        CheckConstraint(
+            "source_workspace_id <> related_workspace_id",
+            name="ck_analyst_audit_distinct_workspaces",
+        ),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "analyst_id": str(self.analyst_id),
+            "source_workspace_id": str(self.source_workspace_id),
+            "related_workspace_id": str(self.related_workspace_id),
+            "session_id": str(self.session_id),
+            "related_session_id": str(self.related_session_id),
+            "action": self.action,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+        }
+
+    @property
+    def is_cross_workspace(self) -> bool:
+        return self.source_workspace_id != self.related_workspace_id
 
 
 class ConversationTurn(Base):
@@ -558,10 +1005,10 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    username = Column(String(100), unique=True, nullable=False, index=True)
-    email = Column(String(255), unique=True, nullable=False, index=True)
+    username = Column(String(100), unique=True, nullable=False)  # Index defined in __table_args__
+    email = Column(String(255), unique=True, nullable=False)  # Index defined in __table_args__
     password_hash = Column(String(255), nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)  # Index defined in __table_args__
     is_superuser = Column(Boolean, default=False, nullable=False)
     full_name = Column(String(255))
     created_at = Column(
@@ -596,6 +1043,11 @@ def _metadata_getter(instance):
 
 
 def _metadata_setter(instance, value):
+    if isinstance(instance, UploadTelemetryEventRecord):
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            raise ValueError("UploadTelemetryEventRecord.metadata must be a dictionary")
     setattr(instance, "_metadata", value)
 
 
@@ -603,3 +1055,4 @@ File.metadata = property(_metadata_getter, _metadata_setter)
 Document.metadata = property(_metadata_getter, _metadata_setter)
 ConversationTurn.metadata = property(_metadata_getter, _metadata_setter)
 Ticket.metadata = property(_metadata_getter, _metadata_setter)
+UploadTelemetryEventRecord.metadata = property(_metadata_getter, _metadata_setter)

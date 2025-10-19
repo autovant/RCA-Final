@@ -75,18 +75,20 @@ class CopilotAPI:
             'data': response.json() if response.status_code == 200 else response.text
         }
 
-    def chat_completion(self, messages: List[Dict[str, str]], options: Dict[str, Any] = None) -> Dict[str, Any]:
+    def chat_completion(self, messages: List[Dict[str, str]], options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Send a chat completion request"""
         self.ensure_valid_token()
         
         if options is None:
             options = {}
         
+        stream = options.get('stream', False)
+
         request_data = {
             'messages': messages,
             'max_tokens': options.get('max_tokens', 1000),
             'temperature': options.get('temperature', 0.3),
-            'stream': options.get('stream', False)
+            'stream': stream
         }
 
         headers = {
@@ -98,13 +100,67 @@ class CopilotAPI:
         response = requests.post(
             'https://api.githubcopilot.com/chat/completions',
             headers=headers,
-            json=request_data
+            json=request_data,
+            stream=stream
         )
 
-        return {
-            'status': response.status_code,
-            'data': response.json() if response.status_code == 200 else response.text
+        if not stream:
+            return {
+                'status': response.status_code,
+                'data': response.json() if response.status_code == 200 else response.text
+            }
+
+        if response.status_code != 200:
+            return {'status': response.status_code, 'data': response.text}
+
+        aggregated_text: List[str] = []
+        usage: Optional[Dict[str, Any]] = None
+
+        print('\n🛈 Streaming response:\n')
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+
+            if line.startswith('data:'):
+                payload = line[len('data:'):].strip()
+
+                if payload == '[DONE]':
+                    break
+
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                if 'usage' in chunk:
+                    usage = chunk['usage']
+
+                choices = chunk.get('choices', [])
+                if not choices:
+                    continue
+
+                delta = choices[0].get('delta', {}) or {}
+                content = delta.get('content')
+                if content:
+                    print(content, end='', flush=True)
+                    aggregated_text.append(content)
+
+        print('\n')
+
+        data = {
+            'choices': [
+                {
+                    'message': {
+                        'content': ''.join(aggregated_text)
+                    }
+                }
+            ],
+            'usage': usage,
+            'streamed': True,
         }
+
+        return {'status': 200, 'data': data}
 
 
 def show_help():
@@ -176,9 +232,24 @@ def main():
             ], options)
 
             if response['status'] == 200:
-                print('\n📝 Response:')
-                print(response['data']['choices'][0]['message']['content'])
-                print(f"\n📊 Usage: {response['data']['usage']['total_tokens']} tokens")
+                if args.stream and response['data'].get('streamed'):
+                    full_text = response['data']['choices'][0]['message']['content']
+                    if full_text:
+                        print('\n\n📝 Final Response (aggregated):')
+                        print(full_text)
+
+                    usage = response['data'].get('usage') or {}
+                    total_tokens = usage.get('total_tokens')
+                    if total_tokens is not None:
+                        print(f"\n📊 Usage: {total_tokens} tokens")
+                else:
+                    print('\n📝 Response:')
+                    print(response['data']['choices'][0]['message']['content'])
+
+                    usage = response['data'].get('usage') or {}
+                    total_tokens = usage.get('total_tokens')
+                    if total_tokens is not None:
+                        print(f"\n📊 Usage: {total_tokens} tokens")
             else:
                 print(f'❌ Error: {response["data"]}')
 

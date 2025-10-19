@@ -1,0 +1,178 @@
+openapi: 3.1.0
+info:
+  title: Related Incident Discovery API
+  version: 0.1.0
+  description: REST endpoints enabling analysts to search and retrieve related RCA sessions across authorized workspaces.
+servers:
+  - url: https://{environment}.rca.internal/api/v1
+    variables:
+      environment:
+        default: app
+        enum: [app, staging, dev]
+paths:
+  /incidents/search:
+    post:
+      summary: Search for historical incidents similar to the provided query terms.
+      operationId: searchRelatedIncidents
+      tags: [RelatedIncidents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Ranked list of incident matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Invalid search payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required.
+        '403':
+          description: User lacks access to requested workspaces.
+  /incidents/{session_id}/related:
+    get:
+      summary: Retrieve related incidents for a completed RCA session.
+      operationId: getRelatedIncidents
+      tags: [RelatedIncidents]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          description: Identifier of the RCA session currently being viewed.
+          schema:
+            type: string
+            format: uuid
+        - name: min_relevance
+          in: query
+          required: false
+          description: Minimum cosine similarity score to include in results (0-1).
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 1
+            default: 0.5
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of related incidents to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+        - name: platform
+          in: query
+          required: false
+          description: Filter results by detected platform code.
+          schema:
+            $ref: '#/components/schemas/PlatformCode'
+      responses:
+        '200':
+          description: Related incidents for this session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '404':
+          description: Session not found or has no fingerprint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required.
+        '403':
+          description: User lacks access to the source session or target workspaces.
+components:
+  schemas:
+    SearchRequest:
+      type: object
+      required: [query, scope]
+      properties:
+        query:
+          type: string
+          description: Free-form text describing the incident context.
+          minLength: 1
+          maxLength: 2000
+        scope:
+          type: string
+          enum: [current_workspace, authorized_workspaces]
+          description: Whether to limit results to the current workspace or include all workspaces the analyst can access.
+        min_relevance:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.5
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        platform:
+          $ref: '#/components/schemas/PlatformCode'
+    SearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelatedIncident'
+        audit_token:
+          type: string
+          description: Identifier for logging analyst review events across workspaces.
+    RelatedIncident:
+      type: object
+      required: [session_id, tenant_id, relevance, summary, detected_platform]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        relevance:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        summary:
+          type: string
+          maxLength: 4096
+        detected_platform:
+          $ref: '#/components/schemas/PlatformCode'
+        occurred_at:
+          type: string
+          format: date-time
+        fingerprint_status:
+          type: string
+          enum: [available, degraded]
+        safeguards:
+          type: array
+          items:
+            type: string
+    ErrorResponse:
+      type: object
+      required: [error_code, message]
+      properties:
+        error_code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    PlatformCode:
+      type: string
+      enum: [blue_prism, uipath, appian, automation_anywhere, pega, unknown]

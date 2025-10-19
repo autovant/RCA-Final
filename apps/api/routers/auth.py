@@ -3,7 +3,8 @@ Authentication router for RCA Engine API.
 Handles user authentication, registration, and token management.
 """
 
-from typing import Optional
+from typing import Optional, Any
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
@@ -58,8 +59,25 @@ class UserResponse(BaseModel):
     is_active: bool
     is_superuser: bool
 
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True,
+        # This doesn't work for model validation, need custom logic
+    }
+
+    @classmethod
+    def from_user(cls, user: Any) -> "UserResponse":
+        """
+        Convert User ORM object to UserResponse.
+        Explicitly converts UUID to string to avoid serialization errors.
+        """
+        return cls(
+            id=str(user.id),  # Convert UUID to string
+            email=user.email,
+            username=user.username,
+            full_name=user.full_name,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser
+        )
 
 
 # Dependency to get current user
@@ -180,7 +198,8 @@ async def register(
         logger.info(f"User registered: {user.username}")
         MetricsCollector.record_http_request("POST", "/api/auth/register", 201, 0)
         
-        return user
+        # Convert User ORM object to response, explicitly converting UUID to string
+        return UserResponse.from_user(user)
         
     except HTTPException:
         raise

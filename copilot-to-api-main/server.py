@@ -25,10 +25,18 @@ class CopilotAPI:
         self.token_expiry: Optional[datetime] = None
 
     def load_config(self) -> Dict[str, str]:
-        """Load configuration from JSON file"""
+        """Load configuration from JSON file or environment."""
+        env_token = os.environ.get('GITHUB_TOKEN') or os.environ.get('COPILOT_ACCESS_TOKEN')
+
         try:
             with open(self.config_path, 'r') as f:
                 return json.load(f)
+        except FileNotFoundError:
+            if env_token:
+                print('ℹ️  config.json not found; using access token from environment.')
+                return {'access_token': env_token}
+            print('❌ config.json not found and no GITHUB_TOKEN/COPILOT_ACCESS_TOKEN provided.')
+            exit(1)
         except Exception as e:
             print(f'Error loading config: {e}')
             exit(1)

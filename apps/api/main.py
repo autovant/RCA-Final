@@ -27,6 +27,7 @@ from apps.api.routers import (
     conversation,
     files,
     health,
+    incidents,
     jobs,
     sse,
     summary,
@@ -97,6 +98,7 @@ if settings.security.RATE_LIMITING_ENABLED:
 
 # Include routers
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
+app.include_router(incidents.router, prefix="/api/v1/incidents", tags=["incidents"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(files.router, prefix="/api/files", tags=["files"])
 app.include_router(health.router, prefix="/api/health", tags=["health"])

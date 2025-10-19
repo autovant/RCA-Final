@@ -1,0 +1,45 @@
+# Prometheus retention and remote write configuration for telemetry pipeline
+# Drop this snippet into the primary prometheus.yml via `file_sd_configs` or merge during deploy.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  # Keep 30 days of high-resolution samples on the primary Prometheus instance.
+  # Adjust storage retention size if disk pressure occurs before 30 days.
+  scrape_timeout: 10s
+
+storage:
+  tsdb:
+    retention_time: 30d
+    retention_size: 400GB
+
+# Remote write to managed Thanos bucket for 12-month downsampled retention.
+remote_write:
+  - url: https://thanos-gateway.example.com/api/v1/receive
+    name: thanos-primary
+    queue_config:
+      capacity: 2500
+      max_shards: 200
+      min_shards: 4
+      batch_send_deadline: 5s
+    metadata_config:
+      send: true
+    write_relabel_configs:
+      - action: keep
+        regex: "rca_.*"
+        source_labels: [__name__]
+    headers:
+      X-Scope-OrgID: "telemetry-prod"
+    basic_auth:
+      username: ${THANOS_USERNAME}
+      password: ${THANOS_PASSWORD}
+
+# Alertmanager route should page SRE team when remote write fails.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/rules/telemetry-remote-write.yml

@@ -1,0 +1,105 @@
+version: '3.8'
+
+# Development/Demo Configuration
+# This runs ONLY the database layer in Docker
+# Backend, UI, and other services run natively on Windows for faster development
+
+services:
+  # PostgreSQL with pgvector extension
+  db:
+    image: pgvector/pgvector:pg15
+    container_name: rca_db
+    restart: "no"  # Temporarily disabled to debug restart loop
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rca_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rca_password_change_in_production}
+      POSTGRES_DB: ${POSTGRES_DB:-rca_engine}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/docker/init-scripts:/docker-entrypoint-initdb.d
+    ports:
+      - "15432:5432"
+    networks:
+      - rca_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rca_user} -d ${POSTGRES_DB:-rca_engine}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=4MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+
+  # Redis for caching and rate limiting (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: rca_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "16379:6379"
+    networks:
+      - rca_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Ollama for local LLM processing (optional)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rca_ollama
+    restart: unless-stopped
+    profiles:
+      - with_ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - rca_network
+    environment:
+      OLLAMA_ORIGINS: "http://localhost:3000,http://localhost:8000"
+      OLLAMA_HOST: "0.0.0.0:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  ollama_data:
+    driver: local
+
+networks:
+  rca_network:
+    driver: bridge

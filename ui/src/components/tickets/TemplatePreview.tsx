@@ -11,7 +11,7 @@ import { TemplateMetadata } from '@/types/tickets';
 
 interface TemplatePreviewProps {
   template: TemplateMetadata;
-  variables?: Record<string, any>;
+  variables?: Record<string, string>;
   className?: string;
 }
 
@@ -27,79 +27,73 @@ export const TemplatePreview: React.FC<TemplatePreviewProps> = ({
   const isComplete = missingVariables.length === 0;
 
   return (
-    <div className={`bg-white border border-gray-200 rounded-lg shadow-sm ${className}`}>
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center">
-            <FileText className="w-5 h-5 text-indigo-600" />
-          </div>
-          <div className="flex-1">
-            <h3 className="text-base font-semibold text-gray-900">{template.name}</h3>
-            <div className="flex items-center gap-3 mt-1">
-              <span className="text-xs text-gray-500">
-                Platform: <span className="font-medium text-gray-700">{template.platform}</span>
-              </span>
-              <span className="text-xs text-gray-500">•</span>
-              <span className="text-xs text-gray-500">
-                {template.field_count} field{template.field_count !== 1 ? 's' : ''}
-              </span>
-            </div>
-          </div>
-          {isComplete ? (
-            <div className="flex items-center gap-2 text-green-600">
-              <CheckCircle className="w-5 h-5" />
-              <span className="text-sm font-medium">Ready</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-amber-600">
-              <AlertCircle className="w-5 h-5" />
-              <span className="text-sm font-medium">{missingVariables.length} missing</span>
-            </div>
-          )}
+    <div className={`card ${className}`}>
+      <div className="flex items-center gap-4 border-b border-dark-border/60 bg-dark-bg-tertiary/60 px-4 py-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-fluent-blue-500/10 text-fluent-blue-200">
+          <FileText className="h-5 w-5" />
         </div>
+        <div className="flex-1">
+          <h3 className="text-base font-semibold text-dark-text-primary">{template.name}</h3>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-dark-text-tertiary">
+            <span>
+              Platform: <span className="font-medium text-dark-text-secondary">{template.platform}</span>
+            </span>
+            <span>•</span>
+            <span>{template.field_count} field{template.field_count !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+        {isComplete ? (
+          <div className="flex items-center gap-2 text-fluent-success">
+            <CheckCircle className="h-5 w-5" />
+            <span className="text-sm font-medium">Ready</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-fluent-warning">
+            <AlertCircle className="h-5 w-5" />
+            <span className="text-sm font-medium">{missingVariables.length} missing</span>
+          </div>
+        )}
       </div>
 
-      {/* Body */}
-      <div className="p-4 space-y-4">
-        {/* Description */}
+      <div className="space-y-4 p-4">
         {template.description && (
           <div>
-            <h4 className="text-sm font-semibold text-gray-700 mb-2">Description</h4>
-            <p className="text-sm text-gray-600 leading-relaxed">{template.description}</p>
+            <h4 className="text-sm font-semibold text-dark-text-primary">Description</h4>
+            <p className="mt-1 text-sm text-dark-text-secondary leading-relaxed">{template.description}</p>
           </div>
         )}
 
-        {/* Required Variables */}
         {template.required_variables.length > 0 && (
           <div>
-            <h4 className="text-sm font-semibold text-gray-700 mb-2">Required Variables</h4>
-            <div className="space-y-2">
+            <h4 className="text-sm font-semibold text-dark-text-primary">Required Variables</h4>
+            <div className="mt-2 space-y-2">
               {template.required_variables.map((varName) => {
-                const hasValue = variables[varName] && variables[varName].trim() !== '';
+                const rawValue = variables[varName] ?? '';
+                const value = typeof rawValue === 'string' ? rawValue.trim() : '';
+                const hasValue = value.length > 0;
                 return (
                   <div
                     key={varName}
-                    className={`flex items-center justify-between px-3 py-2 rounded-lg ${
-                      hasValue ? 'bg-green-50 border border-green-200' : 'bg-gray-50 border border-gray-200'
+                    className={`flex items-center justify-between rounded-lg border px-3 py-2 ${
+                      hasValue
+                        ? 'border-fluent-success/40 bg-fluent-success/10 text-green-200'
+                        : 'border-dark-border/60 bg-dark-bg-tertiary/80 text-dark-text-secondary'
                     }`}
                   >
                     <div className="flex items-center gap-2">
                       {hasValue ? (
-                        <CheckCircle className="w-4 h-4 text-green-600" />
+                        <CheckCircle className="h-4 w-4" />
                       ) : (
-                        <AlertCircle className="w-4 h-4 text-gray-400" />
+                        <AlertCircle className="h-4 w-4 text-dark-text-tertiary" />
                       )}
-                      <span className="text-sm font-mono text-gray-700">{varName}</span>
+                      <span className="font-mono text-sm">{varName}</span>
                     </div>
                     {hasValue ? (
-                      <span className="text-xs text-green-700 bg-green-100 px-2 py-1 rounded">
-                        {String(variables[varName]).length > 30
-                          ? `${String(variables[varName]).substring(0, 30)}...`
-                          : String(variables[varName])}
+                      <span className="truncate text-xs text-dark-text-primary">
+                        {value.length > 30 ? `${value.substring(0, 30)}…` : value}
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-500 italic">Not set</span>
+                      <span className="text-xs italic text-dark-text-tertiary">Not set</span>
                     )}
                   </div>
                 );
@@ -108,21 +102,22 @@ export const TemplatePreview: React.FC<TemplatePreviewProps> = ({
           </div>
         )}
 
-        {/* Field Count Summary */}
-        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+        <div className="rounded-lg border border-fluent-blue-500/30 bg-fluent-blue-500/10 p-3 text-sm text-dark-text-primary">
           <div className="flex items-start gap-2">
-            <FileText className="w-4 h-4 text-indigo-600 mt-0.5" />
+            <FileText className="h-4 w-4 text-fluent-blue-200" />
             <div>
-              <p className="text-sm text-indigo-900">
-                This template will generate a ticket with <strong>{template.field_count} field{template.field_count !== 1 ? 's' : ''}</strong>.
+              <p>
+                This template generates <strong>{template.field_count}</strong> field
+                {template.field_count !== 1 ? 's' : ''} in the outgoing ticket.
               </p>
               {isComplete ? (
-                <p className="text-xs text-indigo-700 mt-1">
-                  All required variables are provided. The ticket is ready to be created.
+                <p className="mt-1 text-xs text-dark-text-secondary">
+                  All required variables are provided. The ticket is ready to submit.
                 </p>
               ) : (
-                <p className="text-xs text-indigo-700 mt-1">
-                  Please provide the {missingVariables.length} missing variable{missingVariables.length !== 1 ? 's' : ''} to continue.
+                <p className="mt-1 text-xs text-dark-text-secondary">
+                  Provide {missingVariables.length} missing value
+                  {missingVariables.length !== 1 ? 's' : ''} to enable this template.
                 </p>
               )}
             </div>

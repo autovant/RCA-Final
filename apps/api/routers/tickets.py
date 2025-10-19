@@ -305,6 +305,23 @@ async def create_from_template(payload: CreateFromTemplateRequest) -> CreateFrom
 @router.get("/{job_id}", response_model=TicketListResponse)
 async def list_tickets(job_id: str, refresh: bool = Query(False)) -> TicketListResponse:
     """Return tickets linked to a job."""
+    # Handle demo/placeholder job_id gracefully
+    if job_id == "demo-job":
+        return TicketListResponse(
+            job_id=job_id,
+            tickets=[],
+        )
+    
+    # Validate UUID format
+    try:
+        from uuid import UUID
+        UUID(job_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid job ID format. Expected UUID, got: {job_id}"
+        )
+    
     job = await job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")

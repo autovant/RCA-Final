@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from starlette.responses import EventSourceResponse
+from sse_starlette.sse import EventSourceResponse
 
 from core.watchers import WatcherService, watcher_event_bus
 

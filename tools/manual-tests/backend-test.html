@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Backend Connection Test</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f0f0f0; }
+        .test { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; }
+        .success { color: green; }
+        .error { color: red; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>RCA Backend Connection Test</h1>
+    <div class="test">
+        <h2>Test 1: Health Check</h2>
+        <button onclick="testHealth()">Test Health Endpoint</button>
+        <pre id="health-result"></pre>
+    </div>
+    <div class="test">
+        <h2>Test 2: Login</h2>
+        <button onclick="testLogin()">Test Login (testuser/Test1234)</button>
+        <pre id="login-result"></pre>
+    </div>
+    <script>
+        async function testHealth() {
+            const result = document.getElementById('health-result');
+            result.textContent = 'Testing...';
+            try {
+                const response = await fetch('http://localhost:8000/api/health/live');
+                const data = await response.json();
+                result.className = 'success';
+                result.textContent = '✅ SUCCESS:\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                result.className = 'error';
+                result.textContent = '❌ ERROR:\n' + error.message;
+            }
+        }
+
+        async function testLogin() {
+            const result = document.getElementById('login-result');
+            result.textContent = 'Testing...';
+            try {
+                const formData = new FormData();
+                formData.append('username', 'testuser');
+                formData.append('password', 'Test1234');
+                const response = await fetch('http://localhost:8000/api/auth/login', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                result.className = 'success';
+                result.textContent = '✅ SUCCESS:\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                result.className = 'error';
+                result.textContent = '❌ ERROR:\n' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>

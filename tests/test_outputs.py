@@ -71,6 +71,9 @@ def test_render_outputs_generates_expected_sections():
     assert json_bundle["analysis_type"] == "rca_analysis"
     assert json_bundle["recommended_actions"]
     assert "Restart the database service" in outputs["markdown"]
+    assert "PII Protection" in outputs["markdown"]
+    assert "pii_protection" in json_bundle
+    assert json_bundle["pii_protection"]["files_sanitised"] == 0
 
 
 def test_watcher_service_normalises_iterables():

@@ -30,7 +30,7 @@ target_metadata = Base.metadata
 # Override sqlalchemy.url from environment
 config.set_main_option(
     "sqlalchemy.url",
-    settings.database.DATABASE_URL.replace("+asyncpg", "")
+    settings.database.DATABASE_URL
 )
 
 

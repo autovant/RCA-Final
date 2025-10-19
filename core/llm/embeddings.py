@@ -5,12 +5,20 @@ Provides text embedding generation and management.
 
 from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
+import hashlib
+import logging
+import re
+import time
+
 import numpy as np
 import httpx
+
 from core.config import settings
-from core.metrics import MetricsCollector, timer, embeddings_generation_duration_seconds
-import logging
-import time
+from core.metrics import (
+    MetricsCollector,
+    embeddings_generation_duration_seconds,
+    timer,
+)
 
 try:  # Optional dependency; only required when using OpenAI embeddings
     from openai import AsyncOpenAI  # type: ignore
@@ -269,6 +277,71 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         return "openai"
 
 
+class HashingEmbeddingProvider(BaseEmbeddingProvider):
+    """Deterministic local embedding provider based on token hashing."""
+
+    def __init__(self, dimension: Optional[int] = None):
+        self.dimension = int(dimension or settings.VECTOR_DIMENSION)
+        self._initialised = False
+
+    async def initialize(self) -> None:
+        self._initialised = True
+        logger.info(
+            "Hashing embedding provider initialized: dimension=%s", self.dimension
+        )
+
+    async def close(self) -> None:
+        self._initialised = False
+        logger.info("Hashing embedding provider closed")
+
+    def _vectorise(self, text: str) -> List[float]:
+        vector = np.zeros(self.dimension, dtype=np.float32)
+        tokens = re.findall(r"\w+", text.lower())
+        if not tokens:
+            return vector.tolist()
+
+        for token in tokens:
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:8], "big") % self.dimension
+            sign = 1.0 if digest[8] & 1 else -1.0
+            vector[index] += sign
+
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector /= norm
+
+        return vector.tolist()
+
+    async def embed_text(self, text: str) -> List[float]:
+        if not self._initialised:
+            await self.initialize()
+
+        start_time = time.time()
+        embedding = self._vectorise(text)
+        duration = time.time() - start_time
+        MetricsCollector.record_embedding_generated("hashing", duration)
+        return embedding
+
+    async def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        if not self._initialised:
+            await self.initialize()
+
+        start_time = time.time()
+        embeddings = [self._vectorise(text) for text in texts]
+        duration = time.time() - start_time
+        MetricsCollector.record_embedding_generated(
+            "hashing", duration, len(texts)
+        )
+        return embeddings
+
+    def get_dimension(self) -> int:
+        return self.dimension
+
+    @property
+    def provider_name(self) -> str:
+        return "hashing"
+
+
 class EmbeddingService:
     """Service for managing embeddings."""
     
@@ -310,12 +383,21 @@ class EmbeddingService:
         Returns:
             BaseEmbeddingProvider: Provider instance
         """
-        if provider_name.lower() == "ollama":
+        normalised = provider_name.lower()
+        if normalised == "ollama":
             return OllamaEmbeddingProvider(**kwargs)
-        elif provider_name.lower() == "openai":
+        if normalised == "openai":
+            api_key = kwargs.get("api_key") or settings.llm.OPENAI_API_KEY
+            if not api_key or str(api_key).startswith("your-"):
+                logger.warning(
+                    "OpenAI API key not configured; falling back to hashing embeddings"
+                )
+                return HashingEmbeddingProvider()
             return OpenAIEmbeddingProvider(**kwargs)
-        else:
-            raise ValueError(f"Unknown embedding provider: {provider_name}")
+        if normalised in {"hashing", "hash", "local"}:
+            return HashingEmbeddingProvider(**kwargs)
+
+        raise ValueError(f"Unknown embedding provider: {provider_name}")
     
     async def initialize(self) -> None:
         """Initialize the service."""
