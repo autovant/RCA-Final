@@ -262,11 +262,16 @@ class PiiRedactor:
             while issues and attempt < self._validation_max_passes:
                 attempt += 1
                 for validator_label, validator_pattern, match_count in issues:
-                    effective_pass_cap = max(self._validation_max_passes, 1)
-                    warning = (
-                        f"Validation detected {match_count} potential {validator_label} pattern(s); "
-                        f"automatically masking them (pass {attempt}/{effective_pass_cap})."
-                    )
+                    if self._validation_max_passes > 0:
+                        warning = (
+                            f"Validation detected {match_count} potential {validator_label} pattern(s); "
+                            f"automatically masking them (pass {attempt}/{self._validation_max_passes})."
+                        )
+                    else:
+                        warning = (
+                            f"Validation detected {match_count} potential {validator_label} pattern(s); "
+                            "no automatic masking performed (validation passes set to 0)."
+                        )
                     if warning not in warning_messages:
                         validation_warnings.append(warning)
                         warning_messages.add(warning)
