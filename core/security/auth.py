@@ -397,7 +397,13 @@ async def get_current_user(
     token = credentials.credentials
 
     dev_token = settings.security.DEV_BEARER_TOKEN
-    if dev_token and secrets.compare_digest(token, dev_token):
+    # Only allow dev token bypass in development or testing environments
+    environment = getattr(settings, "environment", None)
+    if (
+        dev_token
+        and secrets.compare_digest(token, dev_token)
+        and environment in ("development", "dev", "testing", "test")
+    ):
         return await _get_or_create_dev_user(db)
     
     try:
