@@ -140,9 +140,12 @@ class PiiRedactor:
         for char in token:
             frequency[char] = frequency.get(char, 0) + 1
         entropy = 0.0
+        log2_cache = {}
         for count in frequency.values():
             probability = count / length
-            entropy -= probability * math.log2(probability)
+            if probability not in log2_cache:
+                log2_cache[probability] = math.log2(probability)
+            entropy -= probability * log2_cache[probability]
         return entropy
 
     def _scrub_high_entropy_sequences(
