@@ -111,7 +111,7 @@ class RelatedIncidentSearchResult(BaseModel):
         if not self.source_workspace_id:
             return []
 
-        pairs: List[tuple[str, str]] = []
+        pairs: List[Tuple[str, str]] = []
         for match in self.results:
             if match.is_cross_workspace(self.source_workspace_id):
                 pairs.append((match.tenant_id, match.session_id))
