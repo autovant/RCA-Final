@@ -230,8 +230,8 @@ class ArchiveExtractor:
 
     def _copy_stream(
         self,
-    src: IO[bytes],
-    dest: IO[bytes],
+        src: IO[bytes],
+        dest: IO[bytes],
         start: float,
         total_size: int,
     ) -> int:
