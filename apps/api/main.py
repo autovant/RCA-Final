@@ -29,6 +29,7 @@ from apps.api.routers import (
     health,
     incidents,
     jobs,
+    prompts,
     sse,
     summary,
     tickets,
@@ -107,6 +108,7 @@ app.include_router(summary.router, prefix="/api/summary", tags=["summary"])
 app.include_router(conversation.router, prefix="/api/conversation", tags=["conversation"])
 app.include_router(tickets.router, prefix="/api/tickets", tags=["tickets"])
 app.include_router(watcher.router, prefix="/api/watcher", tags=["watcher"])
+app.include_router(prompts.router, prefix="/api/v1/prompts", tags=["prompts"])
 
 # Mount metrics endpoint
 metrics_app = make_asgi_app()

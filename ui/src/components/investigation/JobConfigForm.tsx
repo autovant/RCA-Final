@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui";
+import Link from "next/link";
+import { Eye } from "lucide-react";
 
 interface JobConfig {
   job_type: string;
@@ -9,6 +11,7 @@ interface JobConfig {
   model: string;
   priority: number;
   file_ids?: string[];
+  prompt_template?: string;
 }
 
 interface JobConfigFormProps {
@@ -17,16 +20,43 @@ interface JobConfigFormProps {
   disabled?: boolean;
 }
 
+interface PromptTemplate {
+  name: string;
+  description: string;
+}
+
 export function JobConfigForm({ fileIds, onSubmit, disabled = false }: JobConfigFormProps) {
   const [config, setConfig] = useState<JobConfig>({
     job_type: "rca_analysis",
     provider: "copilot",
     model: "gpt-4",
     priority: 5,
+    prompt_template: "rca_analysis",
   });
+  const [promptTemplates, setPromptTemplates] = useState<Record<string, PromptTemplate>>({});
+  const [loadingPrompts, setLoadingPrompts] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const authToken = process.env.NEXT_PUBLIC_API_AUTH_TOKEN;
+
+  // Load available prompt templates
+  useEffect(() => {
+    const loadPrompts = async () => {
+      try {
+        const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+        const response = await fetch(`${apiBaseUrl}/api/v1/prompts`);
+        if (response.ok) {
+          const data = await response.json();
+          setPromptTemplates(data.templates || {});
+        }
+      } catch (err) {
+        console.error("Failed to load prompt templates:", err);
+      } finally {
+        setLoadingPrompts(false);
+      }
+    };
+    loadPrompts();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,8 +65,14 @@ export function JobConfigForm({ fileIds, onSubmit, disabled = false }: JobConfig
 
     try {
       const payload = {
-        ...config,
+        job_type: config.job_type,
+        provider: config.provider,
+        model: config.model,
+        priority: config.priority,
         file_ids: fileIds,
+        input_manifest: {
+          prompt_template: config.prompt_template,
+        },
       };
       console.log("Creating job with payload:", JSON.stringify(payload, null, 2));
 
@@ -111,6 +147,43 @@ export function JobConfigForm({ fileIds, onSubmit, disabled = false }: JobConfig
             <option value="anthropic">Anthropic</option>
             <option value="ollama">Ollama (Local)</option>
           </select>
+        </div>
+
+        {/* Prompt Template */}
+        <div>
+          <label htmlFor="prompt_template" className="mb-2 flex items-center justify-between text-sm font-medium text-dark-text-secondary">
+            <span>Prompt Template</span>
+            <Link
+              href="/prompts"
+              className="flex items-center gap-1 text-xs text-fluent-blue-400 hover:text-fluent-blue-300"
+              target="_blank"
+            >
+              <Eye className="h-3 w-3" />
+              View All
+            </Link>
+          </label>
+          <select
+            id="prompt_template"
+            value={config.prompt_template}
+            onChange={(e) => setConfig({ ...config, prompt_template: e.target.value })}
+            className="input w-full"
+            disabled={disabled || loadingPrompts}
+          >
+            {loadingPrompts ? (
+              <option>Loading templates...</option>
+            ) : (
+              Object.entries(promptTemplates).map(([key, template]) => (
+                <option key={key} value={key}>
+                  {template.name}
+                </option>
+              ))
+            )}
+          </select>
+          {config.prompt_template && promptTemplates[config.prompt_template] && (
+            <p className="mt-1 text-xs text-dark-text-tertiary">
+              {promptTemplates[config.prompt_template].description}
+            </p>
+          )}
         </div>
 
         {/* Model */}

@@ -4,9 +4,7 @@ import { useEffect, useState } from "react";
 import { Header } from "@/components/layout/Header";
 import { Alert, Button, Card, Input } from "@/components/ui";
 
-// Types
-interface WatcherConfig {
-  id: string;
+type WatcherConfigResponse = {
   enabled: boolean;
   roots: string[];
   include_globs: string[];
@@ -15,9 +13,7 @@ interface WatcherConfig {
   allowed_mime_types: string[];
   batch_window_seconds: number | null;
   auto_create_jobs: boolean;
-  created_at: string | null;
-  updated_at: string | null;
-}
+};
 
 interface WatcherStatus {
   enabled: boolean;
@@ -27,14 +23,13 @@ interface WatcherStatus {
   last_event?: {
     event_type: string;
     created_at: string;
-    payload: any;
+    payload: Record<string, unknown> | null;
   };
 }
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function WatcherPage() {
-  const [config, setConfig] = useState<WatcherConfig | null>(null);
   const [status, setStatus] = useState<WatcherStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -67,8 +62,7 @@ export default function WatcherPage() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/watcher/config`);
       if (!response.ok) throw new Error("Failed to load configuration");
-      const data = await response.json();
-      setConfig(data);
+      const data = (await response.json()) as WatcherConfigResponse;
       
       // Populate form
       setEnabled(data.enabled);
@@ -126,9 +120,6 @@ export default function WatcherPage() {
         const errorData = await response.json();
         throw new Error(errorData.detail || "Failed to save configuration");
       }
-
-      const updatedConfig = await response.json();
-      setConfig(updatedConfig);
       setSuccessMessage("File watcher configuration saved successfully!");
       
       // Reload status
@@ -211,7 +202,9 @@ export default function WatcherPage() {
           </h1>
           <p className="text-dark-text-secondary">
             Configure folders to monitor for automatic file analysis. Files dropped into watched folders
-            are automatically processed and moved to a "Processed" subfolder.
+            are automatically processed and moved to a{" "}
+            <span className="font-mono text-dark-text-primary/80">Processed</span>{" "}
+            subfolder.
           </p>
         </div>
 
@@ -284,9 +277,12 @@ export default function WatcherPage() {
               </div>
               <button
                 onClick={() => setEnabled(!enabled)}
+                type="button"
                 className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
                   enabled ? "bg-fluent-success" : "bg-dark-border"
                 }`}
+                aria-pressed={enabled ? "true" : "false"}
+                aria-label={enabled ? "Disable file watcher" : "Enable file watcher"}
               >
                 <span
                   className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
@@ -301,7 +297,9 @@ export default function WatcherPage() {
           <Card className="p-6">
             <h3 className="text-lg font-semibold text-dark-text-primary mb-4">Watch Folders</h3>
             <p className="text-sm text-dark-text-tertiary mb-4">
-              Folders to monitor for new files. Files will be automatically processed and moved to a "Processed" subfolder.
+              Folders to monitor for new files. Files will be automatically processed and moved to a{" "}
+              <span className="font-mono text-dark-text-primary/80">Processed</span>{" "}
+              subfolder.
             </p>
             <div className="space-y-3">
               {roots.map((root, index) => (
@@ -312,7 +310,9 @@ export default function WatcherPage() {
                   <span className="flex-1 font-mono text-sm text-dark-text-primary">{root}</span>
                   <button
                     onClick={() => removeRoot(index)}
+                    type="button"
                     className="p-1 rounded hover:bg-fluent-error/20 text-fluent-error transition-colors"
+                    aria-label={`Remove watch folder ${root}`}
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -328,7 +328,7 @@ export default function WatcherPage() {
                   placeholder="/path/to/watch/folder"
                   className="flex-1"
                 />
-                <Button onClick={addRoot} variant="secondary">
+                  <Button onClick={addRoot} variant="secondary">
                   Add Folder
                 </Button>
               </div>
@@ -349,7 +349,9 @@ export default function WatcherPage() {
                     <span className="flex-1 font-mono text-sm text-dark-text-primary">{glob}</span>
                     <button
                       onClick={() => removeIncludeGlob(index)}
+                      type="button"
                       className="p-1 rounded hover:bg-fluent-error/20 text-fluent-error transition-colors"
+                      aria-label={`Remove include pattern ${glob}`}
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -366,7 +368,7 @@ export default function WatcherPage() {
                     className="flex-1"
                   />
                   <Button onClick={addIncludeGlob} variant="secondary" size="sm">
-                    +
+                    Add Pattern
                   </Button>
                 </div>
               </div>
@@ -384,7 +386,9 @@ export default function WatcherPage() {
                     <span className="flex-1 font-mono text-sm text-dark-text-primary">{glob}</span>
                     <button
                       onClick={() => removeExcludeGlob(index)}
+                      type="button"
                       className="p-1 rounded hover:bg-fluent-error/20 text-fluent-error transition-colors"
+                      aria-label={`Remove exclusion pattern ${glob}`}
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -401,7 +405,7 @@ export default function WatcherPage() {
                     className="flex-1"
                   />
                   <Button onClick={addExcludeGlob} variant="secondary" size="sm">
-                    +
+                    Add Pattern
                   </Button>
                 </div>
               </div>
@@ -455,7 +459,9 @@ export default function WatcherPage() {
                       {mime}
                       <button
                         onClick={() => removeMimeType(index)}
+                        type="button"
                         className="hover:text-fluent-error transition-colors"
+                        aria-label={`Remove MIME type ${mime}`}
                       >
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -486,9 +492,12 @@ export default function WatcherPage() {
               </div>
               <button
                 onClick={() => setAutoCreateJobs(!autoCreateJobs)}
+                type="button"
                 className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
                   autoCreateJobs ? "bg-fluent-success" : "bg-dark-border"
                 }`}
+                aria-pressed={autoCreateJobs ? "true" : "false"}
+                aria-label={autoCreateJobs ? "Disable auto-create analysis jobs" : "Enable auto-create analysis jobs"}
               >
                 <span
                   className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
@@ -550,7 +559,11 @@ export default function WatcherPage() {
               <svg className="w-5 h-5 text-fluent-info mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <span>Processed files are moved to a "Processed" subfolder to avoid re-processing</span>
+              <span>
+                Processed files are moved to a{" "}
+                <span className="font-mono text-dark-text-primary/80">Processed</span>{" "}
+                subfolder to avoid re-processing
+              </span>
             </li>
           </ul>
         </Card>

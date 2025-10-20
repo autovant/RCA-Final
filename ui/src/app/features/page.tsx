@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui";
@@ -428,6 +429,18 @@ export default function FeaturesPage() {
             Discover the comprehensive capabilities of the RCA Insight Engine—from intelligent automation 
             to enterprise-grade security and seamless ITSM integration.
           </p>
+          <div className="mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
+            <Link href="/demo">
+              <Button size="lg" className="uppercase tracking-[0.24em]">
+                Launch Guided Demo
+              </Button>
+            </Link>
+            <Link href="/investigation">
+              <Button size="lg" variant="ghost" className="uppercase tracking-[0.24em]">
+                Start Investigation
+              </Button>
+            </Link>
+          </div>
         </div>
 
         {/* Mobile Toggle Button */}

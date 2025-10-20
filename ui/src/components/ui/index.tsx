@@ -156,6 +156,7 @@ interface AlertProps {
   title?: string;
   icon?: React.ReactNode;
   className?: string;
+  onClose?: () => void;
 }
 
 export const Alert: React.FC<AlertProps> = ({
@@ -164,6 +165,7 @@ export const Alert: React.FC<AlertProps> = ({
   title,
   icon,
   className = '',
+  onClose,
 }) => {
   const variantClasses = {
     info: 'alert-info',
@@ -196,11 +198,25 @@ export const Alert: React.FC<AlertProps> = ({
   };
 
   return (
-    <div className={`${variantClasses[variant]} ${className}`}>
-      {icon || defaultIcons[variant]}
-      <div className="flex-1">
-        {title && <h4 className="font-semibold mb-1">{title}</h4>}
-        <div>{children}</div>
+    <div role="alert" className={`${variantClasses[variant]} ${className}`}>
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 text-base leading-none">
+          {icon || defaultIcons[variant]}
+        </span>
+        <div className="flex-1">
+          {title && <h4 className="mb-1 font-semibold">{title}</h4>}
+          <div>{children}</div>
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/20 text-xs text-white transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-dark-bg-secondary"
+            aria-label="Dismiss alert"
+          >
+            ×
+          </button>
+        )}
       </div>
     </div>
   );
@@ -315,19 +331,19 @@ export const Modal: React.FC<ModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        className="absolute inset-0 bg-slate-950/70 backdrop-blur-[6px] transition-opacity"
         onClick={onClose}
       />
       
       {/* Modal */}
       <div className={`
-        relative bg-dark-bg-secondary border border-dark-border
-        rounded-xl shadow-fluent-xl ${sizeClasses[size]} w-full
-        animate-scale-in max-h-[90vh] flex flex-col
+        relative rounded-2xl border border-dark-border/45 bg-dark-bg-secondary/75
+        shadow-[0_28px_64px_rgba(8,15,35,0.65)] backdrop-blur-2xl
+        ${sizeClasses[size]} w-full animate-scale-in max-h-[90vh] flex flex-col
       `}>
         {/* Header */}
         {title && (
-          <div className="px-6 py-4 border-b border-dark-border flex items-center justify-between">
+          <div className="flex items-center justify-between border-b border-dark-border/50 px-6 py-4">
             <h3 className="text-xl font-semibold text-dark-text-primary">{title}</h3>
             <button
               onClick={onClose}
@@ -342,7 +358,7 @@ export const Modal: React.FC<ModalProps> = ({
         )}
         
         {/* Content */}
-        <div className="px-6 py-4 overflow-y-auto flex-1">
+        <div className="flex-1 overflow-y-auto px-6 py-4">
           {children}
         </div>
       </div>

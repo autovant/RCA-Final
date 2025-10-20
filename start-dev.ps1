@@ -152,8 +152,8 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 $portChecks = @(
-    @{ Port = 15432; Description = "PostgreSQL development container" },
-    @{ Port = 16379; Description = "Redis development container" }
+    @{ Port = 15433; Description = "PostgreSQL development container" },
+    @{ Port = 16380; Description = "Redis development container" }
 )
 
 Start-Sleep -Seconds 2

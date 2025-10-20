@@ -34,6 +34,8 @@ def _make_summary() -> FileSummary:
 
 def test_render_outputs_generates_expected_sections():
     """Ensure Markdown/HTML/JSON bundles are produced by the processor."""
+    from datetime import datetime, timezone, timedelta
+    
     job = Job(
         job_type="rca_analysis",
         user_id="tester",
@@ -43,6 +45,11 @@ def test_render_outputs_generates_expected_sections():
     )
     job.id = uuid.uuid4()
     job.ticketing = {"platform": "jira"}
+    
+    # Set timestamps for timeline testing
+    job.created_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    job.started_at = datetime.now(timezone.utc) - timedelta(seconds=45)
+    job.completed_at = datetime.now(timezone.utc)
 
     metrics = {
         "files": 1,
@@ -74,6 +81,40 @@ def test_render_outputs_generates_expected_sections():
     assert "PII Protection" in outputs["markdown"]
     assert "pii_protection" in json_bundle
     assert json_bundle["pii_protection"]["files_sanitised"] == 0
+    
+    # Test new enhancements
+    # Executive Summary
+    assert "## 📝 Executive Summary" in outputs["markdown"]
+    assert "executive_summary" in json_bundle
+    assert "severity_level" in json_bundle["executive_summary"]
+    assert json_bundle["executive_summary"]["severity_level"] == "high"
+    
+    # Timeline
+    assert "timeline" in json_bundle
+    assert "created_at" in json_bundle["timeline"]
+    assert "duration_seconds" in json_bundle["timeline"]
+    
+    # Action Priorities
+    assert "action_priorities" in json_bundle
+    assert "high_priority" in json_bundle["action_priorities"]
+    assert "standard_priority" in json_bundle["action_priorities"]
+    
+    # Enhanced PII Protection
+    assert "security_guarantee" in json_bundle["pii_protection"]
+    assert "compliance" in json_bundle["pii_protection"]
+    assert "GDPR" in json_bundle["pii_protection"]["compliance"]
+    
+    # HTML enhancements
+    assert "<!DOCTYPE html>" in outputs["html"]
+    assert "--fluent-blue-500" in outputs["html"]  # Fluent Design CSS variables
+    assert "severity-" in outputs["html"]  # Severity class
+    assert "Executive Summary" in outputs["html"]
+    assert "linear-gradient" in outputs["html"]  # Gradient styling
+    
+    # Markdown enhancements
+    assert "🔴" in outputs["markdown"] or "🟠" in outputs["markdown"] or "🟡" in outputs["markdown"] or "🟢" in outputs["markdown"]
+    assert "Analysis Metadata" in outputs["markdown"]
+    assert "Root Cause Analysis Report" in outputs["markdown"]
 
 
 def test_watcher_service_normalises_iterables():

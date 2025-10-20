@@ -83,7 +83,6 @@ export default function InvestigationPage() {
               <FileUpload
                 onFilesUploaded={handleFilesUploaded}
                 jobId={currentJobId || undefined}
-                onJobCreated={handleJobCreated}
               />
             </div>
 

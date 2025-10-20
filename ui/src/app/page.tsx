@@ -70,7 +70,7 @@ export default function HomePage() {
     <div className="relative min-h-screen bg-dark-bg-primary">
       <Header showAuthActions={false} />
 
-      <main className="container mx-auto flex flex-col gap-12 px-4 py-12 sm:px-6 lg:px-8 lg:gap-16">
+  <main className="container mx-auto flex flex-col gap-12 px-4 pt-24 pb-12 sm:px-6 lg:px-8 lg:gap-16 lg:pt-28">
         <section className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] xl:gap-8">
           <HeroBanner
             className="h-full"
@@ -87,7 +87,7 @@ export default function HomePage() {
               "Glassmorphic work surfaces keep focus on critical decisions",
               "Human checkpoints ensure automation stays in lockstep",
             ]}
-      eyebrow="Executive Operations Control"
+            eyebrow="Executive Operations Control"
           />
 
           <ReliabilityPanel
@@ -197,6 +197,36 @@ export default function HomePage() {
                 </Button>
                 <Button size="lg" variant="ghost" onClick={handleNavigateToJobs}>
                   Review Job History
+                </Button>
+              </div>
+            </Card>
+
+            <Card className="relative overflow-hidden border border-fluent-blue-500/25 bg-gradient-to-br from-fluent-blue-500/10 via-transparent to-dark-bg-secondary p-6">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(56,189,248,0.18),transparent_55%)]" aria-hidden="true" />
+              <div className="relative space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-lg bg-fluent-blue-500/20 p-2 text-fluent-blue-300">
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-5.197-3.028A1 1 0 008 9.028v5.944a1 1 0 001.555.832l5.197-2.916a1 1 0 000-1.72z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-dark-text-primary">Launch the Guided Demo</h3>
+                </div>
+                <p className="text-sm text-dark-text-secondary">
+                  Showcase redaction, semantic search, classification, and platform intelligence with a scripted tour that runs without live data.
+                </p>
+                <Button
+                  variant="secondary"
+                  className="w-full sm:w-auto"
+                  onClick={() => router.push("/demo")}
+                  icon={
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-5.197-3.028A1 1 0 008 9.028v5.944a1 1 0 001.555.832l5.197-2.916a1 1 0 000-1.72z" />
+                    </svg>
+                  }
+                >
+                  Open Demo Tour
                 </Button>
               </div>
             </Card>

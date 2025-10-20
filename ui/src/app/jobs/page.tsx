@@ -1,11 +1,13 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import { Header } from "@/components/layout/Header";
 import { HeroBanner } from "@/components/dashboard/HeroBanner";
 import { StatCard } from "@/components/dashboard/StatsCards";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { formatTimestamp, useJobsPreview } from "@/data/jobsPreview";
+import { FileText } from "lucide-react";
 
 const statusMap: Record<string, { label: string; variant: "success" | "info" | "warning" | "error" | "neutral" }> = {
   completed: { label: "Completed", variant: "success" },
@@ -138,6 +140,7 @@ export default function JobsPage() {
                       <th scope="col">Owner</th>
                       <th scope="col">Created</th>
                       <th scope="col">Updated</th>
+                      <th scope="col">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -155,6 +158,17 @@ export default function JobsPage() {
                           <td className="text-dark-text-secondary">{job.user_id}</td>
                           <td className="text-dark-text-secondary">{formatTimestamp(job.created_at) ?? "—"}</td>
                           <td className="text-dark-text-secondary">{formatTimestamp(job.updated_at) ?? "—"}</td>
+                          <td>
+                            {job.status.toLowerCase() === 'completed' && (
+                              <Link
+                                href={`/jobs/${job.id}`}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 bg-fluent-blue-500 hover:bg-fluent-blue-400 text-white rounded-lg transition-colors text-sm font-medium"
+                              >
+                                <FileText className="w-4 h-4" />
+                                View Report
+                              </Link>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}

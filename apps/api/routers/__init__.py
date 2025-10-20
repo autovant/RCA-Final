@@ -2,7 +2,7 @@
 API routers for RCA Engine.
 """
 
-from . import auth, conversation, files, health, incidents, jobs, sse, summary, tickets, watcher
+from . import auth, conversation, files, health, incidents, jobs, prompts, sse, summary, tickets, watcher
 
 __all__ = [
     "auth",
@@ -11,6 +11,7 @@ __all__ = [
     "health",
     "incidents",
     "jobs",
+    "prompts",
     "sse",
     "summary",
     "tickets",

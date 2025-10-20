@@ -54,8 +54,8 @@ export function CommandCenter({
   return (
     <section aria-labelledby="command-center-heading" className="space-y-5">
       <div className="grid gap-4 lg:grid-cols-12">
-        <Card className="relative col-span-12 overflow-hidden lg:col-span-6 xl:col-span-5 p-6">
-          <div className="absolute inset-0 bg-gradient-to-br from-fluent-blue-500/20 via-transparent to-dark-bg-secondary/80" aria-hidden="true" />
+        <Card className="relative col-span-12 overflow-hidden rounded-3xl border border-dark-border/45 bg-dark-bg-secondary/80 p-7 shadow-[0_18px_42px_rgba(15,23,42,0.38)] backdrop-blur-2xl lg:col-span-6 xl:col-span-5">
+          <div className="absolute inset-0 bg-gradient-to-br from-fluent-blue-500/22 via-transparent to-dark-bg-secondary/85" aria-hidden="true" />
           <div className="relative flex flex-col gap-6">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -64,14 +64,14 @@ export function CommandCenter({
                   Operations Launchpad
                 </h2>
                 <p className="mt-2 text-sm text-dark-text-tertiary">
-                  Initiate guided workflows or refresh telemetry without leaving the console.
+                  Initiate guided workflows, approvals, and telemetry refreshes from a single pane.
                 </p>
               </div>
               <div className="hidden sm:flex -space-x-2">
                 {[1, 2, 3].map((item) => (
                   <div
-                    key={item}
-                    className="h-9 w-9 rounded-full border border-dark-border/50 bg-dark-bg-tertiary/70"
+                    key={`operator-${item}`}
+                    className="h-9 w-9 rounded-full border border-dark-border/45 bg-dark-bg-tertiary/70"
                   />
                 ))}
               </div>
@@ -125,12 +125,12 @@ export function CommandCenter({
           </div>
         </Card>
 
-        <Card className="col-span-12 lg:col-span-6 xl:col-span-7 p-6">
+        <Card className="col-span-12 rounded-3xl border border-dark-border/45 bg-dark-bg-secondary/75 p-7 shadow-[0_18px_42px_rgba(15,23,42,0.34)] backdrop-blur-2xl lg:col-span-6 xl:col-span-7">
           <div className="flex items-start justify-between">
             <div>
               <h3 className="section-title">Operations Timeline</h3>
               <p className="mt-1 text-xs text-dark-text-tertiary">
-                Track the latest automations, guardrail checks, and outcomes.
+                Track the latest automations, validation checkpoints, and downstream updates.
               </p>
             </div>
             <Button
@@ -183,12 +183,14 @@ export function CommandCenter({
                       >
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                           <div>
-                            <p className="font-semibold text-dark-text-primary capitalize">
+                            <p className="font-semibold capitalize text-dark-text-primary">
                               {jobType}
                             </p>
                             <p className="text-xs text-dark-text-tertiary">{created}</p>
                           </div>
-                          <Badge variant={statusVariant}>{label}</Badge>
+                          <Badge variant={statusVariant} className="tracking-[0.24em]">
+                            {label}
+                          </Badge>
                         </div>
                         <div className="mt-3 flex items-center justify-between text-xs text-dark-text-tertiary">
                           <span className="font-mono uppercase">#{job.id.slice(0, 8)}</span>

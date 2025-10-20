@@ -27,11 +27,19 @@ export const StatCard: React.FC<StatCardProps> = ({
   };
 
   const borderClasses = {
-    blue: 'border-fluent-blue-500/40',
-    green: 'border-fluent-success/40',
-    yellow: 'border-fluent-warning/40',
-    red: 'border-fluent-error/40',
-    cyan: 'border-fluent-info/40',
+    blue: "border-fluent-blue-500/40",
+    green: "border-fluent-success/40",
+    yellow: "border-fluent-warning/40",
+    red: "border-fluent-error/40",
+    cyan: "border-fluent-info/40",
+  };
+
+  const hoverBorderClasses = {
+    blue: "hover:border-fluent-blue-500/45",
+    green: "hover:border-fluent-success/45",
+    yellow: "hover:border-fluent-warning/45",
+    red: "hover:border-fluent-error/45",
+    cyan: "hover:border-fluent-info/45",
   };
 
   const iconColorClasses = {
@@ -43,17 +51,20 @@ export const StatCard: React.FC<StatCardProps> = ({
   };
 
   return (
-    <article className={`relative overflow-hidden rounded-2xl border bg-dark-bg-tertiary/60 p-6 backdrop-blur-xl transition-all duration-200 hover:-translate-y-1 hover:shadow-fluent-lg ${borderClasses[color]}`}>
-      <div className={`absolute inset-0 bg-gradient-to-br ${gradientClasses[color]} opacity-80`} aria-hidden="true" />
+    <article
+      className={`relative overflow-hidden rounded-2xl border border-dark-border/35 bg-dark-bg-tertiary/60 p-6 shadow-[0_16px_38px_rgba(15,23,42,0.32)] backdrop-blur-xl transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_20px_44px_rgba(56,189,248,0.25)] ${borderClasses[color]} ${hoverBorderClasses[color]}`}
+    >
+      <div className={`absolute inset-0 bg-gradient-to-br ${gradientClasses[color]} opacity-90`} aria-hidden="true" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_55%)]" aria-hidden="true" />
       <div className="relative flex items-start justify-between gap-4">
         <div className="flex-1">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-dark-text-tertiary">{title}</p>
+          <p className="text-[0.6rem] font-semibold uppercase tracking-[0.24em] text-dark-text-tertiary">{title}</p>
           <p className="mt-3 text-3xl font-semibold text-dark-text-primary">{value}</p>
 
           {trend && (
             <div
-              className={`mt-3 inline-flex items-center gap-1 rounded-full bg-dark-bg-secondary/70 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${
-                trend.isPositive ? 'text-fluent-success' : 'text-fluent-error'
+              className={`mt-3 inline-flex items-center gap-1 rounded-full border border-dark-border/40 bg-dark-bg-secondary/60 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.22em] ${
+                trend.isPositive ? "text-fluent-success" : "text-fluent-error"
               }`}
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

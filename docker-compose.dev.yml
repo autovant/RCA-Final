@@ -20,7 +20,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./deploy/docker/init-scripts:/docker-entrypoint-initdb.d
     ports:
-      - "15432:5432"
+      - "15433:5432"
     networks:
       - rca_network
     healthcheck:
@@ -60,7 +60,7 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "16379:6379"
+      - "16380:6379"
     networks:
       - rca_network
     healthcheck:
