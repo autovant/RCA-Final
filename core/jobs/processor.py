@@ -1258,7 +1258,7 @@ class JobProcessor:
         if not documents:
             raise ValueError("No documents available to embed")
 
-        texts = [cast(str, getattr(doc, "content", "")) for doc in documents]
+        texts = [doc.content if isinstance(doc.content, str) and doc.content is not None else "" for doc in documents]
         embeddings = await self._generate_embeddings(texts)
 
         async with self._session_factory() as session:

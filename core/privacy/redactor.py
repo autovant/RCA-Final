@@ -140,9 +140,12 @@ class PiiRedactor:
         for char in token:
             frequency[char] = frequency.get(char, 0) + 1
         entropy = 0.0
+        log2_cache = {}
         for count in frequency.values():
             probability = count / length
-            entropy -= probability * math.log2(probability)
+            if probability not in log2_cache:
+                log2_cache[probability] = math.log2(probability)
+            entropy -= probability * log2_cache[probability]
         return entropy
 
     def _scrub_high_entropy_sequences(
@@ -262,11 +265,16 @@ class PiiRedactor:
             while issues and attempt < self._validation_max_passes:
                 attempt += 1
                 for validator_label, validator_pattern, match_count in issues:
-                    effective_pass_cap = max(self._validation_max_passes, 1)
-                    warning = (
-                        f"Validation detected {match_count} potential {validator_label} pattern(s); "
-                        f"automatically masking them (pass {attempt}/{effective_pass_cap})."
-                    )
+                    if self._validation_max_passes > 0:
+                        warning = (
+                            f"Validation detected {match_count} potential {validator_label} pattern(s); "
+                            f"automatically masking them (pass {attempt}/{self._validation_max_passes})."
+                        )
+                    else:
+                        warning = (
+                            f"Validation detected {match_count} potential {validator_label} pattern(s); "
+                            "no automatic masking performed (validation passes set to 0)."
+                        )
                     if warning not in warning_messages:
                         validation_warnings.append(warning)
                         warning_messages.add(warning)

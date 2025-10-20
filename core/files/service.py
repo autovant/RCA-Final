@@ -409,11 +409,8 @@ class FileService:
                 .where(File.checksum == checksum)
                 .order_by(File.created_at.asc())
             )
-            duplicate: Optional[File]
-            if hasattr(duplicate_result, "scalars"):
-                duplicate = duplicate_result.scalars().first()
-            else:
-                duplicate = getattr(duplicate_result, "scalar_one_or_none", lambda: None)()
+            # Use a consistent approach for extracting the result from SQLAlchemy.
+            duplicate: Optional[File] = duplicate_result.scalars().first()
             if duplicate:
                 duplicate_id = str(getattr(duplicate, "id", "")) or None
                 raw_job_id = getattr(duplicate, "job_id", None)

@@ -107,7 +107,7 @@ class StageLabels:
     status: str
     feature_flags: str
 
-    def to_kwargs(self) -> dict[str, str]:  # pragma: no cover - trivial wrapper
+    def to_kwargs(self) -> dict[str, str]:
         return {
             "tenant_id": self.tenant_id,
             "stage": self.stage,

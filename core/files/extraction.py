@@ -230,8 +230,8 @@ class ArchiveExtractor:
 
     def _copy_stream(
         self,
-    src: IO[bytes],
-    dest: IO[bytes],
+        src: IO[bytes],
+        dest: IO[bytes],
         start: float,
         total_size: int,
     ) -> int:
@@ -249,7 +249,7 @@ class ArchiveExtractor:
         target = destination / sanitized
         target_resolved = target.resolve()
         destination_resolved = destination.resolve()
-        if not str(target_resolved).startswith(str(destination_resolved)):
+        if not target_resolved.is_relative_to(destination_resolved):
             raise ArchiveExtractionError(
                 f"Archive member escapes extraction directory: {member_name}"
             )

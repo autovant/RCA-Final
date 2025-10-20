@@ -97,7 +97,7 @@ class TimeoutConfig:
         return httpx.Timeout(
             connect=self.connection_timeout_seconds,
             read=self.read_timeout_seconds,
-            write=self.read_timeout_seconds,
+            write=self.total_timeout_seconds,
             pool=self.total_timeout_seconds
         )
 
