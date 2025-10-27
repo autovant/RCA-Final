@@ -28,7 +28,7 @@ Deliver cross-workspace related incident discovery, platform-aware log parsing, 
 - **Resilience by Design**: No new external ITSM integrations introduced; reuse existing retry-capable internal services → PASS
 - **Schema-First Validation**: Archive/member validation enhancements extend existing utilities; plan maintains schema checks before persistence → PASS
 - **Template-Driven Ticket Creation**: Not in scope → PASS (N/A)
-- **Metrics-First Integration**: Plan includes telemetry expansion for detection and archive safeguards leveraging existing Prometheus exporters → PASS
+- **Metrics-First Integration**: Plan includes telemetry expansion for detection and archive safeguards leveraging existing Prometheus exporters. Metrics exposed via `/metrics` endpoint in OpenMetrics format per Constitution IV. New metrics: `itsm_platform_detection_total{platform, outcome}`, `itsm_archive_extraction_safeguard_violations_total{format, reason}`, `itsm_fingerprint_generation_duration_seconds{outcome}` → PASS
 - **Test Coverage for Integration Paths**: Unit and integration tests required for new ingestion flows and safeguards → PASS
 
 Post-Phase1 Review (2025-10-17): All gates remain satisfied; new telemetry counters and validation rules align with constitution standards.

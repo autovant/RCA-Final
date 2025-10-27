@@ -564,6 +564,20 @@ class Settings(BaseSettings):
         "AES-256-GCM", env="EMBEDDING_CACHE_ENCRYPTION_ALGORITHM"
     )
 
+    EMBEDDING_CACHE_HIT_RATE_THRESHOLD: float = Field(
+        0.3, env="EMBEDDING_CACHE_HIT_RATE_THRESHOLD"
+    )
+    EMBEDDING_CACHE_EVICTION_MIN_INTERVAL_SECONDS: int = Field(
+        12 * 60 * 60,
+        env="EMBEDDING_CACHE_EVICTION_MIN_INTERVAL_SECONDS",
+    )
+    EMBEDDING_CACHE_EVICTION_MAX_AGE_DAYS: int = Field(
+        90, env="EMBEDDING_CACHE_EVICTION_MAX_AGE_DAYS"
+    )
+    EMBEDDING_CACHE_EVICTION_BATCH_SIZE: int = Field(
+        500, env="EMBEDDING_CACHE_EVICTION_BATCH_SIZE"
+    )
+
     # Ticketing defaults
     SERVICENOW_ENABLED: bool = Field(False, env="SERVICENOW_ENABLED")
     SERVICENOW_INSTANCE_URL: Optional[str] = Field(None, env="SERVICENOW_INSTANCE_URL")
@@ -670,6 +684,30 @@ class Settings(BaseSettings):
             )
 
         return raw
+
+    @field_validator(
+        "EMBEDDING_CACHE_HIT_RATE_THRESHOLD",
+        "EMBEDDING_CACHE_EVICTION_MIN_INTERVAL_SECONDS",
+        "EMBEDDING_CACHE_EVICTION_MAX_AGE_DAYS",
+        "EMBEDDING_CACHE_EVICTION_BATCH_SIZE",
+    )
+    @classmethod
+    def _validate_embedding_cache_controls(
+        cls,
+        value,
+        info: ValidationInfo,
+    ):
+        name = info.field_name or "embedding_cache_setting"
+        if name == "EMBEDDING_CACHE_HIT_RATE_THRESHOLD":
+            numeric = float(value)
+            if not 0 < numeric <= 1:
+                raise ValueError("EMBEDDING_CACHE_HIT_RATE_THRESHOLD must be within (0, 1].")
+            return numeric
+
+        integer_value = int(value)
+        if integer_value <= 0:
+            raise ValueError(f"{name} must be greater than zero.")
+        return integer_value
 
     @cached_property
     def security(self) -> SecuritySettings:
@@ -894,6 +932,8 @@ settings = Settings()
 
 from .feature_flags import (  # noqa: E402
     ALL_FEATURE_FLAGS,
+    EMBEDDING_CACHE,
+    EMBEDDING_CACHE_EVICTION,
     FeatureFlagDefinition,
     FeatureFlagSet,
     TELEMETRY_ENHANCED_METRICS,
@@ -905,5 +945,7 @@ __all__ = [
     "FeatureFlagDefinition",
     "FeatureFlagSet",
     "TELEMETRY_ENHANCED_METRICS",
+    "EMBEDDING_CACHE",
+    "EMBEDDING_CACHE_EVICTION",
     "ALL_FEATURE_FLAGS",
 ]

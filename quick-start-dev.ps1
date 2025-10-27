@@ -4,7 +4,7 @@ param(
     [switch]$NoWorker
 )
 
-$backendPort = 8001
+$backendPort = 8000
 $copilotPort = 5001
 $script:copilotProxyStarted = $false
 $script:copilotProxyMessage = ""
@@ -33,7 +33,7 @@ function Get-PortListener {
     } catch {}
 
     try {
-        $netstatLine = netstat -ano | Select-String -Pattern "[:\.]$Port\s" | Select-Object -First 1
+        $netstatLine = netstat -ano | Select-String -Pattern "LISTENING.*[:\.]$Port\s" | Select-Object -First 1
         if ($netstatLine) {
             $netstatPid = ($netstatLine.Line -split '\s+')[-1]
             $proc = $null
@@ -47,6 +47,37 @@ function Get-PortListener {
     } catch {}
 
     return $null
+}
+
+function Stop-PortListener {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $listener = Get-PortListener -Port $Port
+    if ($listener) {
+        $owner = if ($listener.ProcessName) { "$($listener.ProcessName) (PID $($listener.ProcessId))" } else { "PID $($listener.ProcessId)" }
+        Write-Host "⚠ $Description port $Port is occupied by $owner - force closing..." -ForegroundColor Yellow
+        
+        try {
+            Stop-Process -Id $listener.ProcessId -Force -ErrorAction Stop
+            Start-Sleep -Milliseconds 500
+            
+            # Verify the port is now free
+            $stillListening = Get-PortListener -Port $Port
+            if ($stillListening) {
+                Write-Host "  WARNING: Process may still be terminating, waiting..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+            } else {
+                Write-Host "  ✓ Port $Port freed successfully" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "  ERROR: Failed to terminate process $($listener.ProcessId): $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  You may need to manually close the process or run as Administrator." -ForegroundColor Yellow
+            exit 1
+        }
+    }
 }
 
 function Assert-PortFree {
@@ -83,8 +114,14 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Assert-PortFree -Port $backendPort -Description "Backend API"
-Assert-PortFree -Port 3000 -Description "Frontend UI"
+# Force close any processes on required ports
+Write-Host ""
+Write-Host "Checking and clearing required ports..." -ForegroundColor Yellow
+Stop-PortListener -Port $backendPort -Description "Backend API"
+Stop-PortListener -Port 3000 -Description "Frontend UI"
+Stop-PortListener -Port $copilotPort -Description "Copilot Proxy"
+Write-Host "✓ All required ports are available" -ForegroundColor Green
+Write-Host ""
 
 $repoPath = (Get-Location).Path
 $startWorker = -not $NoWorker
@@ -128,8 +165,6 @@ function Start-CopilotProxy {
         $script:copilotProxyMessage = "Copilot proxy skipped: missing copilot-to-api-main/server.py"
         return
     }
-
-    Assert-PortFree -Port $copilotPort -Description "Copilot proxy"
 
     $pythonExe = Join-Path (Get-Location) "venv\Scripts\python.exe"
     if (-not (Test-Path $pythonExe)) {

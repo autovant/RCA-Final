@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  ChangeEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Header } from "@/components/layout/Header";
 import { Alert, Button, Card, Input } from "@/components/ui";
 
@@ -13,6 +21,7 @@ type WatcherConfigResponse = {
   allowed_mime_types: string[];
   batch_window_seconds: number | null;
   auto_create_jobs: boolean;
+  available_processors?: WatcherProcessorOption[];
 };
 
 interface WatcherStatus {
@@ -27,7 +36,93 @@ interface WatcherStatus {
   };
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+type WatcherEventPayload = {
+  id?: string;
+  event_type: string;
+  created_at: string;
+  payload?: Record<string, unknown> | null;
+  job_id?: string | null;
+  watcher_id?: string | null;
+};
+
+type WatcherStatsTimelinePoint = {
+  bucket: string;
+  count: number;
+};
+
+type WatcherStatsEntry = {
+  event_type: string;
+  total: number;
+  timeline: WatcherStatsTimelinePoint[];
+};
+
+type WatcherStatsResponse = {
+  lookback_hours: number;
+  total_events: number;
+  event_types: WatcherStatsEntry[];
+};
+
+type WatcherPreset = {
+  id: string;
+  name: string;
+  description: string;
+  config: Partial<WatcherConfigResponse>;
+};
+
+type WatcherProcessorOption = {
+  id: string;
+  name: string;
+  description: string;
+  default_options: Record<string, unknown>;
+};
+
+type PatternTestOutcome = {
+  path: string;
+  status: string;
+  reason: string;
+  matched_includes: string[];
+  matched_excludes: string[];
+  include_globs: string[];
+  exclude_globs: string[];
+};
+
+const SSE_HISTORY = 50;
+const MAX_EVENT_LOG = 200;
+const STATS_REFRESH_INTERVAL = 60_000;
+
+const formatDisplayTimestamp = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+};
+
+const formatBucketLabel = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
+const summarisePayload = (payload: Record<string, unknown> | null | undefined): string | null => {
+  if (!payload) {
+    return null;
+  }
+  try {
+    const serialised = JSON.stringify(payload);
+    if (serialised.length > 140) {
+      return `${serialised.slice(0, 137)}...`;
+    }
+    return serialised;
+  } catch (err) {
+    console.error("Failed to serialise watcher payload", err);
+    return null;
+  }
+};
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 export default function WatcherPage() {
   const [status, setStatus] = useState<WatcherStatus | null>(null);
@@ -35,6 +130,21 @@ export default function WatcherPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [eventLog, setEventLog] = useState<WatcherEventPayload[]>([]);
+  const [sseStatus, setSseStatus] = useState<"idle" | "connecting" | "open" | "error">("idle");
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [stats, setStats] = useState<WatcherStatsResponse | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const statsTimerRef = useRef<number | null>(null);
+  const [presets, setPresets] = useState<WatcherPreset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState<string>("");
+  const [availableProcessors, setAvailableProcessors] = useState<WatcherProcessorOption[]>([]);
+  const [patternPath, setPatternPath] = useState("");
+  const [patternResult, setPatternResult] = useState<PatternTestOutcome | null>(null);
+  const [patternTesting, setPatternTesting] = useState(false);
+  const [patternError, setPatternError] = useState<string | null>(null);
 
   // Form state
   const [enabled, setEnabled] = useState(true);
@@ -52,17 +162,67 @@ export default function WatcherPage() {
   const [newExcludeGlob, setNewExcludeGlob] = useState("");
   const [newMimeType, setNewMimeType] = useState("");
 
-  // Load configuration
-  useEffect(() => {
-    loadConfig();
-    loadStatus();
-  }, []);
+  const timelineEvents = useMemo(() => {
+    if (!eventLog.length) {
+      return [] as WatcherEventPayload[];
+    }
+    return [...eventLog].reverse();
+  }, [eventLog]);
 
-  const loadConfig = async () => {
+  const recentEvents = useMemo(() => timelineEvents.slice(0, 30), [timelineEvents]);
+
+  const selectedPreset = useMemo(() => {
+    if (!selectedPresetId) {
+      return null;
+    }
+    return presets.find((preset) => preset.id === selectedPresetId) ?? null;
+  }, [presets, selectedPresetId]);
+
+  const connectionBadge = useMemo(() => {
+    switch (sseStatus) {
+      case "open":
+        return { label: "Streaming", dot: "bg-green-400", tone: "text-green-300" };
+      case "connecting":
+        return { label: "Connecting", dot: "bg-yellow-400", tone: "text-yellow-300" };
+      case "error":
+        return { label: "Disconnected", dot: "bg-red-400", tone: "text-red-300" };
+      default:
+        return { label: "Idle", dot: "bg-dark-text-tertiary", tone: "text-dark-text-tertiary" };
+    }
+  }, [sseStatus]);
+
+  const statsEventTypes = useMemo(() => stats?.event_types ?? [], [stats]);
+  const lookbackHours = stats?.lookback_hours ?? 24;
+  const totalEventsCount = useMemo(() => {
+    if (stats?.total_events !== undefined) {
+      return stats.total_events;
+    }
+    if (status?.total_events !== undefined) {
+      return status.total_events;
+    }
+    return 0;
+  }, [stats, status]);
+
+  const patternStatusTheme = useMemo(() => {
+    if (!patternResult) {
+      return null;
+    }
+    switch (patternResult.status) {
+      case "included":
+        return { border: "border-green-400/40", background: "bg-green-500/10", tone: "text-green-300" };
+      case "excluded":
+        return { border: "border-amber-400/40", background: "bg-amber-500/10", tone: "text-amber-200" };
+      default:
+        return { border: "border-dark-border", background: "bg-dark-bg-elevated/40", tone: "text-dark-text-secondary" };
+    }
+  }, [patternResult]);
+
+  // Load configuration
+  const loadConfig = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/watcher/config`);
       if (!response.ok) throw new Error("Failed to load configuration");
-      const data = (await response.json()) as WatcherConfigResponse;
+  const data = (await response.json()) as WatcherConfigResponse;
       
       // Populate form
       setEnabled(data.enabled);
@@ -73,6 +233,7 @@ export default function WatcherPage() {
       setAllowedMimeTypes(data.allowed_mime_types || []);
       setBatchWindow(data.batch_window_seconds || 5);
       setAutoCreateJobs(data.auto_create_jobs);
+  setAvailableProcessors(data.available_processors || []);
       
       setError(null);
     } catch (err) {
@@ -80,9 +241,9 @@ export default function WatcherPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const loadStatus = async () => {
+  const loadStatus = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/watcher/status`);
       if (!response.ok) throw new Error("Failed to load status");
@@ -91,7 +252,244 @@ export default function WatcherPage() {
     } catch (err) {
       console.error("Failed to load watcher status:", err);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void loadConfig();
+    void loadStatus();
+  }, [loadConfig, loadStatus]);
+
+  const loadPresets = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/watcher/presets`);
+      if (!response.ok) return;
+      const data = (await response.json()) as WatcherPreset[];
+      setPresets(data);
+    } catch (err) {
+      console.error("Failed to load watcher presets:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPresets();
+  }, [loadPresets]);
+
+  const loadStats = useCallback(async () => {
+    setStatsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/watcher/stats?lookback_hours=24`);
+      if (!response.ok) throw new Error("Failed to load watcher statistics");
+      const data = (await response.json()) as WatcherStatsResponse;
+      setStats(data);
+    } catch (err) {
+      console.error("Failed to load watcher statistics:", err);
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStats();
+    if (typeof window !== "undefined") {
+      const interval = window.setInterval(() => {
+        void loadStats();
+      }, STATS_REFRESH_INTERVAL);
+      statsTimerRef.current = interval;
+      return () => window.clearInterval(interval);
+    }
+    return undefined;
+  }, [loadStats]);
+
+  const stopEventStream = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (typeof window !== "undefined" && reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const appendEvent = useCallback((payload: WatcherEventPayload) => {
+    setEventLog((previous) => {
+      const next = [...previous, payload];
+      if (next.length > MAX_EVENT_LOG) {
+        return next.slice(next.length - MAX_EVENT_LOG);
+      }
+      return next;
+    });
+    setStatus((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const updated: WatcherStatus = {
+        ...prev,
+        total_events: prev.total_events + 1,
+        last_event: {
+          event_type: payload.event_type,
+          created_at: payload.created_at,
+          payload: payload.payload ?? null,
+        },
+      };
+      return updated;
+    });
+  }, []);
+
+  const startEventStream = useCallback(function startStream() {
+    if (typeof window === "undefined" || typeof window.EventSource === "undefined") {
+      setSseStatus("error");
+      setStreamError("Live event streaming is not supported in this environment.");
+      return;
+    }
+
+    stopEventStream();
+    setStreamError(null);
+    setSseStatus("connecting");
+
+    const endpoint = `${API_BASE_URL}/api/v1/watcher/events?history=${SSE_HISTORY}`;
+    const source = new window.EventSource(endpoint, { withCredentials: true });
+    eventSourceRef.current = source;
+
+    const handleWatcherEvent: EventListener = (event) => {
+      const message = event as MessageEvent<string>;
+      if (!message.data) {
+        return;
+      }
+      try {
+        const payload = JSON.parse(message.data) as WatcherEventPayload & { event_type: string };
+        appendEvent(payload);
+      } catch (parseError) {
+        console.error("Failed to parse watcher event:", parseError);
+      }
+    };
+
+    const handleHeartbeat: EventListener = () => {
+      if (sseStatus !== "open") {
+        setSseStatus("open");
+      }
+    };
+
+    source.onopen = () => {
+      setSseStatus("open");
+      setStreamError(null);
+      if (reconnectTimerRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    source.onerror = () => {
+      setSseStatus("error");
+      setStreamError("Live stream disconnected. Retrying...");
+      stopEventStream();
+      if (typeof window !== "undefined" && reconnectTimerRef.current === null) {
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null;
+          startStream();
+        }, 3000);
+      }
+    };
+
+    source.addEventListener("watcher-event", handleWatcherEvent);
+    source.addEventListener("heartbeat", handleHeartbeat);
+  }, [appendEvent, stopEventStream, sseStatus]);
+
+  useEffect(() => {
+    startEventStream();
+    return () => {
+      stopEventStream();
+      setSseStatus("idle");
+    };
+  }, [startEventStream, stopEventStream]);
+
+  const applyPreset = useCallback((preset: WatcherPreset) => {
+    const { config } = preset;
+    if (config.roots && Array.isArray(config.roots)) {
+      setRoots([...config.roots]);
+    }
+    if (config.include_globs && Array.isArray(config.include_globs)) {
+      setIncludeGlobs([...config.include_globs]);
+    }
+    if (config.exclude_globs && Array.isArray(config.exclude_globs)) {
+      setExcludeGlobs([...config.exclude_globs]);
+    }
+    if (config.allowed_mime_types && Array.isArray(config.allowed_mime_types)) {
+      setAllowedMimeTypes([...config.allowed_mime_types]);
+    }
+    if (typeof config.max_file_size_mb === "number") {
+      setMaxFileSize(config.max_file_size_mb);
+    }
+    if (typeof config.batch_window_seconds === "number") {
+      setBatchWindow(config.batch_window_seconds);
+    }
+    if (typeof config.auto_create_jobs === "boolean") {
+      setAutoCreateJobs(config.auto_create_jobs);
+    }
+    if (typeof config.enabled === "boolean") {
+      setEnabled(config.enabled);
+    }
+    setSuccessMessage(`Preset "${preset.name}" applied. Save to persist changes.`);
+  }, []);
+
+  const handlePresetChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const presetId = event.target.value;
+      setSelectedPresetId(presetId);
+      const preset = presets.find((entry) => entry.id === presetId);
+      if (preset) {
+        applyPreset(preset);
+      }
+    },
+    [applyPreset, presets],
+  );
+
+  const handlePatternTest = useCallback(async () => {
+    const sample = patternPath.trim();
+    if (!sample) {
+      setPatternError("Enter a sample path to evaluate.");
+      setPatternResult(null);
+      return;
+    }
+
+    setPatternTesting(true);
+    setPatternError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/watcher/pattern/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: sample,
+          include_globs: includeGlobs,
+          exclude_globs: excludeGlobs,
+        }),
+      });
+
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Pattern test failed");
+      }
+
+      const data = (await response.json()) as PatternTestOutcome;
+      setPatternResult(data);
+    } catch (err) {
+      setPatternError(err instanceof Error ? err.message : "Pattern test failed");
+      setPatternResult(null);
+    } finally {
+      setPatternTesting(false);
+    }
+  }, [excludeGlobs, includeGlobs, patternPath]);
+
+  const handlePatternKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void handlePatternTest();
+      }
+    },
+    [handlePatternTest],
+  );
 
   const handleSave = async () => {
     setSaving(true);
@@ -119,6 +517,10 @@ export default function WatcherPage() {
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.detail || "Failed to save configuration");
+      }
+      const saved = (await response.json().catch(() => null)) as WatcherConfigResponse | null;
+      if (saved) {
+        setAvailableProcessors(saved.available_processors || []);
       }
       setSuccessMessage("File watcher configuration saved successfully!");
       
@@ -230,7 +632,7 @@ export default function WatcherPage() {
               </svg>
               Watcher Status
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="p-4 rounded-lg bg-dark-bg-elevated/50">
                 <div className="flex items-center gap-2 mb-2">
                   <div className={`w-3 h-3 rounded-full ${status.enabled ? 'bg-fluent-success animate-pulse' : 'bg-dark-text-tertiary'}`}></div>
@@ -248,6 +650,10 @@ export default function WatcherPage() {
                 <p className="text-sm font-medium text-dark-text-secondary mb-2">Watched Folders</p>
                 <p className="text-lg font-semibold text-dark-text-primary">{status.roots.length}</p>
               </div>
+              <div className="p-4 rounded-lg bg-dark-bg-elevated/50">
+                <p className="text-sm font-medium text-dark-text-secondary mb-2">Processors Available</p>
+                <p className="text-lg font-semibold text-dark-text-primary">{availableProcessors.length}</p>
+              </div>
             </div>
             {status.last_event && (
               <div className="mt-4 p-3 rounded-lg bg-dark-bg-elevated/30 border border-dark-border/20">
@@ -264,6 +670,145 @@ export default function WatcherPage() {
           </Card>
         )}
 
+        {/* Live Event Stream */}
+        <Card className="mb-6 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-dark-text-primary">Live Event Stream</h3>
+              <p className="text-sm text-dark-text-tertiary">
+                Real-time watcher activity captured from the background processor.
+              </p>
+            </div>
+            <div className={`flex items-center gap-2 text-xs ${connectionBadge.tone}`}>
+              <span className={`h-2 w-2 rounded-full ${connectionBadge.dot}`} />
+              {connectionBadge.label}
+            </div>
+          </div>
+          {streamError && (
+            <div className="mt-4 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {streamError}
+            </div>
+          )}
+          <div className="mt-4 max-h-72 overflow-y-auto rounded-lg border border-dark-border/40 bg-dark-bg-elevated/30 p-3">
+            {recentEvents.length ? (
+              <ul className="space-y-3">
+                {recentEvents.map((event, index) => {
+                  const summary = summarisePayload(event.payload);
+                  const jobLabel = event.job_id ? `Job ${event.job_id}` : null;
+                  return (
+                    <li
+                      key={event.id ?? `${event.event_type}-${event.created_at}-${index}`}
+                      className="rounded-md bg-dark-bg-elevated/40 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-dark-text-primary">{event.event_type}</p>
+                          {jobLabel && (
+                            <p className="mt-1 text-xs text-dark-text-tertiary">{jobLabel}</p>
+                          )}
+                          {summary && (
+                            <p className="mt-2 break-all font-mono text-[11px] text-dark-text-secondary/90">
+                              {summary}
+                            </p>
+                          )}
+                        </div>
+                        <span className="whitespace-nowrap text-xs text-dark-text-tertiary">
+                          {formatDisplayTimestamp(event.created_at)}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="text-sm text-dark-text-tertiary">Waiting for watcher activity...</p>
+            )}
+          </div>
+        </Card>
+
+        {/* Analytics */}
+        <Card className="mb-6 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-dark-text-primary">Watcher Analytics</h3>
+              <p className="text-sm text-dark-text-tertiary">Activity for the last {lookbackHours} hours</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs uppercase tracking-wide text-dark-text-tertiary">Events</p>
+              <p className="text-xl font-semibold text-dark-text-primary">
+                {totalEventsCount.toLocaleString()}
+              </p>
+            </div>
+          </div>
+          {statsLoading ? (
+            <div className="mt-6 flex justify-center">
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-fluent-blue-500 border-t-transparent" />
+            </div>
+          ) : statsEventTypes.length ? (
+            <div className="mt-4 grid gap-3">
+              {statsEventTypes.map((entry) => (
+                <div
+                  key={entry.event_type}
+                  className="rounded-lg border border-dark-border/40 bg-dark-bg-elevated/30 p-3"
+                >
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-semibold text-dark-text-primary">{entry.event_type}</span>
+                    <span className="text-dark-text-secondary">{entry.total.toLocaleString()}</span>
+                  </div>
+                  {entry.timeline.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-dark-text-tertiary">
+                      {entry.timeline.slice(-6).map((point) => (
+                        <span
+                          key={`${entry.event_type}-${point.bucket}`}
+                          className="rounded bg-dark-bg-elevated/60 px-2 py-1"
+                        >
+                          {formatBucketLabel(point.bucket)} · {point.count}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-dark-text-tertiary">
+              No watcher activity recorded in the selected window.
+            </p>
+          )}
+        </Card>
+
+        {/* Presets */}
+        {presets.length > 0 && (
+          <Card className="mb-6 p-6">
+            <h3 className="text-lg font-semibold text-dark-text-primary mb-2">Configuration Presets</h3>
+            <p className="text-sm text-dark-text-tertiary mb-4">
+              Pick a starting template to populate the watcher settings quickly.
+            </p>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center">
+              <label className="w-full text-sm text-dark-text-secondary md:flex-1">
+                <span className="sr-only">Select a watcher preset</span>
+                <select
+                  value={selectedPresetId}
+                  onChange={handlePresetChange}
+                  className="mt-0 w-full rounded-md border border-dark-border bg-dark-bg-elevated px-3 py-2 text-sm text-dark-text-primary"
+                >
+                  <option value="">Choose a preset…</option>
+                  {presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedPreset && (
+                <div className="text-xs text-dark-text-tertiary md:w-1/2">
+                  {selectedPreset.description}
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
+
         {/* Configuration Form */}
         <div className="space-y-6">
           {/* Enable/Disable */}
@@ -275,21 +820,25 @@ export default function WatcherPage() {
                   Turn on automatic monitoring of configured folders
                 </p>
               </div>
-              <button
-                onClick={() => setEnabled(!enabled)}
-                type="button"
-                className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
-                  enabled ? "bg-fluent-success" : "bg-dark-border"
-                }`}
-                aria-pressed={enabled ? "true" : "false"}
-                aria-label={enabled ? "Disable file watcher" : "Enable file watcher"}
-              >
+              <label className="relative inline-flex h-8 w-14 cursor-pointer select-none items-center">
+                <span className="sr-only">{enabled ? "Disable file watcher" : "Enable file watcher"}</span>
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={() => setEnabled(!enabled)}
+                  className="sr-only"
+                />
                 <span
-                  className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+                  className={`pointer-events-none absolute inset-0 rounded-full transition-colors ${
+                    enabled ? "bg-fluent-success" : "bg-dark-border"
+                  }`}
+                />
+                <span
+                  className={`pointer-events-none absolute h-6 w-6 transform rounded-full bg-white transition-transform ${
                     enabled ? "translate-x-7" : "translate-x-1"
                   }`}
                 />
-              </button>
+              </label>
             </div>
           </Card>
 
@@ -412,6 +961,68 @@ export default function WatcherPage() {
             </Card>
           </div>
 
+          {/* Pattern Tester */}
+          <Card className="p-6">
+            <h3 className="text-lg font-semibold text-dark-text-primary mb-2">Pattern Tester</h3>
+            <p className="text-sm text-dark-text-tertiary mb-4">
+              Validate whether a sample file path would be processed using the current include and exclude rules.
+            </p>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center">
+              <Input
+                value={patternPath}
+                onChange={(event) => setPatternPath(event.target.value)}
+                onKeyDown={handlePatternKeyDown}
+                placeholder="/var/logs/errors/app.log"
+                className="flex-1"
+              />
+              <Button
+                variant="secondary"
+                onClick={handlePatternTest}
+                disabled={patternTesting}
+              >
+                {patternTesting ? "Testing..." : "Test Path"}
+              </Button>
+            </div>
+            {patternError && (
+              <p className="mt-3 text-xs text-red-300">{patternError}</p>
+            )}
+            {patternResult && patternStatusTheme && (
+              <div
+                className={`mt-4 rounded-lg border ${patternStatusTheme.border} ${patternStatusTheme.background} p-4`}
+              >
+                <p className={`text-sm font-semibold ${patternStatusTheme.tone}`}>
+                  Result: {patternResult.status.toUpperCase()} — {patternResult.reason}
+                </p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div>
+                    <p className="text-xs font-medium text-dark-text-tertiary uppercase tracking-wide">Matched include patterns</p>
+                    {patternResult.matched_includes.length ? (
+                      <ul className="mt-2 space-y-1 text-xs text-dark-text-secondary">
+                        {patternResult.matched_includes.map((pattern) => (
+                          <li key={pattern} className="font-mono">{pattern}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-xs text-dark-text-tertiary">None</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-dark-text-tertiary uppercase tracking-wide">Matched exclude patterns</p>
+                    {patternResult.matched_excludes.length ? (
+                      <ul className="mt-2 space-y-1 text-xs text-dark-text-secondary">
+                        {patternResult.matched_excludes.map((pattern) => (
+                          <li key={pattern} className="font-mono">{pattern}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-xs text-dark-text-tertiary">None</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </Card>
+
           {/* Advanced Settings */}
           <Card className="p-6">
             <h3 className="text-lg font-semibold text-dark-text-primary mb-4">Advanced Settings</h3>
@@ -490,21 +1101,27 @@ export default function WatcherPage() {
                 <p className="font-medium text-dark-text-primary">Auto-create Analysis Jobs</p>
                 <p className="text-sm text-dark-text-tertiary">Automatically trigger RCA for detected files</p>
               </div>
-              <button
-                onClick={() => setAutoCreateJobs(!autoCreateJobs)}
-                type="button"
-                className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
-                  autoCreateJobs ? "bg-fluent-success" : "bg-dark-border"
-                }`}
-                aria-pressed={autoCreateJobs ? "true" : "false"}
-                aria-label={autoCreateJobs ? "Disable auto-create analysis jobs" : "Enable auto-create analysis jobs"}
-              >
+              <label className="relative inline-flex h-8 w-14 cursor-pointer select-none items-center">
+                <span className="sr-only">
+                  {autoCreateJobs ? "Disable auto-create analysis jobs" : "Enable auto-create analysis jobs"}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={autoCreateJobs}
+                  onChange={() => setAutoCreateJobs(!autoCreateJobs)}
+                  className="sr-only"
+                />
                 <span
-                  className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+                  className={`pointer-events-none absolute inset-0 rounded-full transition-colors ${
+                    autoCreateJobs ? "bg-fluent-success" : "bg-dark-border"
+                  }`}
+                />
+                <span
+                  className={`pointer-events-none absolute h-6 w-6 transform rounded-full bg-white transition-transform ${
                     autoCreateJobs ? "translate-x-7" : "translate-x-1"
                   }`}
                 />
-              </button>
+              </label>
             </div>
           </Card>
 

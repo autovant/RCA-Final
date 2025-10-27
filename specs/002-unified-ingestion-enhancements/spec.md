@@ -115,6 +115,36 @@ File submitters need to upload compressed artifacts in additional formats withou
 - **Platform Detection Result**: Captures detected platform name, confidence score, parser flag state, extracted entity references, and telemetry correlation IDs.
 - **Archive Extraction Audit**: Records archive source details, format, extraction outcome (success, partial, blocked), safeguard metrics, and associated job identifiers.
 
+### Platform Detection Specification
+
+**Supported Platforms**: Blue Prism, UiPath, Appian, Automation Anywhere, Pega
+
+**Detection Methodology**:
+
+Each platform is identified by analyzing log file characteristics:
+
+| Platform | Primary Indicators | Confidence Weight | Example Patterns |
+|----------|-------------------|-------------------|------------------|
+| Blue Prism | File naming (`*.log`), XML structure, `<process>` tags | 0.4 file + 0.6 content | `<process name="...">`, `<stage name="...">` |
+| UiPath | `.xaml` workflow files, `UiPath.` namespaces | 0.3 file + 0.7 content | `<Activity x:TypeArguments="...">`, `UiPath.Core.Activities` |
+| Appian | JSON-structured process logs, `appian-` prefixes | 0.2 file + 0.8 content | `"processModel":`, `"taskName":`, `"appian-process-id"` |
+| Automation Anywhere | `.atmx` task files, `Automation Anywhere` headers | 0.5 file + 0.5 content | `<AutomationAnywhere>`, `<TaskBot>` |
+| Pega | `.pega` extension, `px-` class prefixes | 0.3 file + 0.7 content | `"pyClassName": "px...`, `"pzInsKey":` |
+
+**Confidence Calculation**:
+- Base score = sum(indicator_weight × match_success)
+- Bonus: +0.1 if multiple indicators match
+- Penalty: -0.2 if conflicting indicators detected
+- Final confidence = clamp(base_score + bonus - penalty, 0.0, 1.0)
+
+**Rollout Threshold**: `0.70` (configurable via `platform_detection.confidence_threshold`)
+
+**Decision Logic**:
+- confidence ≥ threshold → Run platform-specific parser
+- confidence < threshold → Use generic pipeline, log detection result for model improvement
+
+**See Also**: `contracts/platform-detection-api.md` for parser interface contracts
+
 ### Assumptions
 
 - Similarity scoring hides matches below a configurable confidence threshold but allows analysts to lower the threshold manually when needed.
@@ -131,6 +161,45 @@ File submitters need to upload compressed artifacts in additional formats withou
 - **SC-003**: At least 85% of ingested log bundles from supported platforms yield extracted entities stored alongside the job within the pilot period.
 - **SC-004**: Less than 1% of archive ingestion attempts fail due to extraction safeguards while zero infrastructure incidents are attributed to decompression abuse during rollout.
 - **SC-005**: Analyst satisfaction surveys report a 20% increase in perceived context completeness during RCA reviews after feature launch.
+
+## Testing Requirements *(mandatory per Constitution V)*
+
+### Unit Test Coverage
+
+All new code paths MUST include dedicated unit tests covering:
+
+1. **Validation Rules** (FR-011):
+   - Test supported file type validation for each archive format (.bz2, .xz, .tar.gz, .tar.bz2, .tar.xz)
+   - Test rejection of unsupported member types
+   - Test nested archive detection and handling
+
+2. **Safeguard Behavior** (FR-010):
+   - Test decompression ratio enforcement (threshold: configured in `core/config.py`)
+   - Test member count limit enforcement (threshold: configured in `core/config.py`)
+   - Test extraction abort and audit event emission
+
+3. **Platform Detection Logic** (FR-005):
+   - Test confidence score calculation for each supported platform
+   - Test threshold-based parser routing
+   - Test generic fallback when confidence < threshold
+
+4. **Fingerprint Generation** (FR-001):
+   - Test successful fingerprint creation from completed job
+   - Test degraded fingerprint scenarios (missing embeddings)
+   - Test fingerprint generation failure and retry logic
+
+### Integration Test Coverage
+
+- End-to-end ingestion flow for each archive format with safeguard validation
+- Platform detection → parser execution → entity persistence flow
+- Related incident search across workspaces with filtering
+- Feature flag toggling without service restart
+
+### Test Execution
+
+- All tests MUST pass before merge to feature branch
+- Coverage target: >80% for new code paths
+- Test results documented in `docs/reports/unified-ingestion-validation.md`
 
 ## Implementation Status
 

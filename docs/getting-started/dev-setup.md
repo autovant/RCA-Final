@@ -2,13 +2,40 @@
 
 This guide distills the content from the legacy `DEV_SETUP_SIMPLIFIED.md` into a focused checklist for day-to-day development.
 
+## ⚠️ Critical Prerequisite: Docker in WSL (NOT Docker Desktop)
+
+**This project requires Docker Engine running INSIDE WSL 2, NOT Docker Desktop on Windows.**
+
+### Why WSL Docker?
+- Docker Desktop is typically **blocked in enterprise environments**
+- All startup scripts use `wsl.exe` to invoke Docker commands inside your WSL distribution
+- Database containers (PostgreSQL, Redis) run in WSL's Docker Engine
+
+### Verify Docker in WSL
+```powershell
+# Test from PowerShell - should show running containers
+wsl.exe -e docker ps
+
+# If this fails, Docker is not properly installed/running in WSL
+```
+
+### Installing Docker in WSL (if needed)
+```bash
+# Inside WSL terminal (Ubuntu/Debian):
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+# Log out and back in, then:
+sudo service docker start
+```
+
 ## Tooling Prerequisites
 
 | Component | Version | Notes |
 |-----------|---------|-------|
 | Python | 3.11+ | Install with the "Add to PATH" option. |
 | Node.js | 18+ | Required for the Next.js UI. |
-| WSL 2 + Docker Engine | Latest | Run `wsl.exe -e docker ps` to confirm Docker is reachable. |
+| **WSL 2 + Docker Engine** | **Latest** | **Docker must run INSIDE WSL, not Docker Desktop.** Run `wsl.exe -e docker ps` to confirm. |
 | Git | Latest | Ensure `core.autocrlf` is set to `true` on Windows. |
 
 ## One-Time Setup
@@ -80,6 +107,35 @@ GITHUB_TOKEN=<token with Copilot scope>
 UI overrides live in `ui/.env.local` (defaults to `http://localhost:8000`).
 
 ## When Things Break
+
+### Docker-Related Issues
+
+- **"ERROR: WSL is not available"**
+  - Enable WSL 2: `wsl --install` (requires admin, reboot)
+  - Verify: `wsl.exe --version`
+
+- **"ERROR: docker compose is not available inside WSL"**
+  - Docker not installed in WSL distribution
+  - Inside WSL: `curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh`
+  - Add user to docker group: `sudo usermod -aG docker $USER` (log out/in)
+  - Start Docker: `sudo service docker start`
+
+- **"ERROR: Unable to translate repository path into WSL"**
+  - WSL cannot access Windows filesystem
+  - Check mount: `wsl.exe -e ls /mnt/c/Users` (should show your user folder)
+  - Verify WSL path translation: `wsl.exe wslpath -a "C:\Users"`
+
+- **Scripts fail with "container name already in use"**
+  - Old containers still running: `wsl.exe -e docker ps -a`
+  - Remove all RCA containers: `wsl.exe -e docker rm -f $(docker ps -aq --filter name=rca_)`
+  - Or use: `.\STOP-SIMPLE.ps1` then retry
+
+- **"Cannot connect to Docker daemon"**
+  - Docker service not running in WSL
+  - Start it: `wsl.exe -e sudo service docker start`
+  - Auto-start (Ubuntu): add to `~/.bashrc`: `if [ ! -S /var/run/docker.sock ]; then sudo service docker start; fi`
+
+### Other Common Issues
 
 - **Rebuild venv**: delete `venv/` and rerun `setup-dev-environment.ps1`
 - **Clear Next.js cache**: `Remove-Item -Recurse -Force ui/.next`

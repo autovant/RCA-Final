@@ -47,7 +47,8 @@ export function usePlatformDetection(jobId: string | null | undefined): UsePlatf
 
     const fetchPlatformDetection = async () => {
       try {
-        const response = await fetch(`/api/v1/jobs/${jobId}/platform-detection`, {
+        const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+        const response = await fetch(`${API_BASE_URL}/api/v1/jobs/${jobId}/platform-detection`, {
           headers: {
             "Content-Type": "application/json",
           },

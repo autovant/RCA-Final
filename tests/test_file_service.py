@@ -81,17 +81,20 @@ async def test_ingest_upload_persists_file(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ingest_upload_detects_duplicates(tmp_path):
+async def test_ingest_upload_allows_duplicate_files(tmp_path):
+    """Duplicate uploads are now allowed - each creates a new job."""
     file_service = FileService()
     file_service._uploads_root = tmp_path  # type: ignore[attr-defined]
 
     session = _DummySession(existing=object())
     upload = _upload_file("duplicate.log", b"INFO already stored\n")
 
-    with pytest.raises(HTTPException) as exc:
-        await file_service.ingest_upload(cast(Any, session), "job-1", upload)
-
-    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    # This should NOT raise an exception anymore - duplicates are allowed
+    result = await file_service.ingest_upload(cast(Any, session), "job-1", upload)
+    
+    # Verify the file was successfully ingested
+    assert result is not None
+    assert result.filename == "duplicate.log"
 
 
 @pytest.mark.asyncio

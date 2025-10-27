@@ -13,6 +13,7 @@ from core.security.middleware import (
     RateLimitMiddleware as _RateLimitMiddleware,
     RequestLoggingMiddleware,
 )
+from apps.api.middleware.deduplication import RequestDeduplicationMiddleware
 
 
 class SecurityMiddleware(_SecurityHeadersMiddleware):
@@ -21,4 +22,9 @@ class SecurityMiddleware(_SecurityHeadersMiddleware):
 
 RateLimitMiddleware = _RateLimitMiddleware
 
-__all__ = ["SecurityMiddleware", "RateLimitMiddleware", "RequestLoggingMiddleware"]
+__all__ = [
+    "SecurityMiddleware",
+    "RateLimitMiddleware",
+    "RequestLoggingMiddleware",
+    "RequestDeduplicationMiddleware",
+]

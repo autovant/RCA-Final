@@ -487,6 +487,163 @@
         "options": {
           "showHeader": true
         }
+      },
+      {
+        "id": 16,
+        "title": "Feature Flags & Adoption",
+        "type": "row",
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 45
+        }
+      },
+      {
+        "id": 17,
+        "title": "Feature Flag State",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rca_feature_flag_state{feature=~\"related_incidents|platform_detection|archive_expanded_formats\"}",
+            "legendFormat": "{{feature}}",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 46
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          },
+          "text": {
+            "valueSize": 48
+          },
+          "colorMode": "value",
+          "graphMode": "none",
+          "orientation": "horizontal"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "0": {
+                    "text": "OFF",
+                    "color": "red"
+                  },
+                  "1": {
+                    "text": "ON",
+                    "color": "green"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": 0,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 18,
+        "title": "Feature Adoption Rate",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(rca_feature_usage_total{feature=~\"related_incidents|platform_detection|archive_expanded_formats\"}[5m])",
+            "legendFormat": "{{feature}}",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 8,
+          "y": 46
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 10
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "calcs": ["mean", "last"],
+            "displayMode": "table",
+            "placement": "bottom"
+          }
+        }
+      },
+      {
+        "id": 19,
+        "title": "Feature Flag Toggles (Last 24h)",
+        "type": "bargauge",
+        "targets": [
+          {
+            "expr": "changes(rca_feature_flag_state{feature=~\"related_incidents|platform_detection|archive_expanded_formats\"}[24h])",
+            "legendFormat": "{{feature}}",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 16,
+          "y": 46
+        },
+        "options": {
+          "orientation": "horizontal",
+          "displayMode": "gradient",
+          "showUnfilled": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": 0,
+                  "color": "green"
+                },
+                {
+                  "value": 3,
+                  "color": "yellow"
+                },
+                {
+                  "value": 5,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        }
       }
     ],
     "templating": {

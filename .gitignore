@@ -98,6 +98,20 @@ local_config.py
 # Local runtime artifacts
 .local-pids.json
 .playwright-mcp/
+
+# Temporary test and debug files
+/test_*.py
+/temp_*.py
+/check_*.py
+/verify_*.py
+/*.log
+tests/debug/**
 .wslvenv/
 venv-wsl/
 tmp/
+
+# Cleanup and legacy files
+pre-cleanup-manifest.txt
+*-manifest.txt
+/restart-backend.ps1
+/start-backend-*.sh

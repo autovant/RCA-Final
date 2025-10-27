@@ -7,6 +7,7 @@ create, list, and inspect background jobs while the richer workflow evolves.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,16 @@ from core.jobs.service import JobService
 
 router = APIRouter()
 job_service = JobService()
+TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+DEFAULT_CANCEL_REASON = "User requested cancellation"
+DEFAULT_PAUSE_REASON = "User paused live analysis"
+DEFAULT_RESUME_NOTE = "User resumed live analysis"
+
+
+def _is_platform_detection_enabled() -> bool:
+    """Check if platform detection feature is enabled."""
+    env_value = os.getenv("PLATFORM_DETECTION_ENABLED", "").lower()
+    return env_value in ("true", "1", "yes", "on")
 
 
 class JobCreateRequest(BaseModel):
@@ -115,6 +126,41 @@ class PlatformDetectionResponse(BaseModel):
     detected_at: Optional[str] = Field(default=None, description="Detection timestamp in ISO8601 format")
 
 
+class JobCancelRequest(BaseModel):
+    """Optional payload accompanying a cancel request."""
+
+    reason: Optional[str] = Field(
+        default=None,
+        description="Optional explanation recorded against the cancellation event",
+    )
+
+
+class JobPauseRequest(BaseModel):
+    """Optional payload for pause requests."""
+
+    reason: Optional[str] = Field(
+        default=None,
+        description="Optional note recorded when the job is paused",
+    )
+
+
+class JobResumeRequest(BaseModel):
+    """Optional payload for resume requests."""
+
+    note: Optional[str] = Field(
+        default=None,
+        description="Optional note recorded when the job resumes",
+    )
+
+
+class JobActionResponse(BaseModel):
+    """Acknowledgement returned for state transition operations."""
+
+    job_id: str = Field(..., description="Job identifier the action applied to")
+    status: str = Field(..., description="Resulting job status after the action")
+    message: str = Field(..., description="Human readable confirmation message")
+
+
 def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -194,6 +240,136 @@ async def job_events(
     return [JobEventResponse.from_orm(event) for event in trimmed]
 
 
+@router.post(
+    "/{job_id}/cancel",
+    response_model=JobActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def cancel_job(job_id: str, payload: Optional[JobCancelRequest] = None) -> JobActionResponse:
+    """Request cancellation of a running job."""
+
+    job = await job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    if job.status in TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job already {job.status}",
+        )
+
+    reason = payload.reason if payload and payload.reason else DEFAULT_CANCEL_REASON
+    applied = await job_service.cancel_job(job_id, reason=reason)
+    if not applied:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job could not be cancelled",
+        )
+
+    return JobActionResponse(
+        job_id=job_id,
+        status="cancelled",
+        message="Job cancellation requested",
+    )
+
+
+@router.post(
+    "/{job_id}/pause",
+    response_model=JobActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def pause_job(job_id: str, payload: Optional[JobPauseRequest] = None) -> JobActionResponse:
+    """Pause a running job so analysis can be resumed later."""
+
+    job = await job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    job_status = getattr(job, "status", None)
+    if job_status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is {job_status}; pause is only supported while running",
+        )
+
+    reason = payload.reason if payload and payload.reason else DEFAULT_PAUSE_REASON
+    applied = await job_service.pause_job(job_id, reason=reason)
+    if not applied:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job could not be paused",
+        )
+
+    return JobActionResponse(
+        job_id=job_id,
+        status="paused",
+        message="Job paused",
+    )
+
+
+@router.post(
+    "/{job_id}/resume",
+    response_model=JobActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_job(job_id: str, payload: Optional[JobResumeRequest] = None) -> JobActionResponse:
+    """Resume a previously paused job."""
+
+    job = await job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    job_status = getattr(job, "status", None)
+    if job_status != "paused":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is {job_status}; resume is only supported for paused jobs",
+        )
+
+    note = payload.note if payload and payload.note else DEFAULT_RESUME_NOTE
+    applied = await job_service.resume_job(job_id, note=note)
+    if not applied:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job could not be resumed",
+        )
+
+    return JobActionResponse(
+        job_id=job_id,
+        status="running",
+        message="Job resumed",
+    )
+
+
+@router.post(
+    "/{job_id}/retry",
+    response_model=JobActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_job(job_id: str) -> JobActionResponse:
+    """Reset a completed job so it can be processed again."""
+
+    job = await job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    if job.status not in TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is {job.status}; retry is only supported for completed, failed, or cancelled jobs",
+        )
+
+    restarted = await job_service.restart_job(job_id)
+    if restarted is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    return JobActionResponse(
+        job_id=job_id,
+        status=str(getattr(restarted, "status", "pending")),
+        message="Job queued for retry",
+    )
+
+
 @router.get("/{job_id}/fingerprint", response_model=JobFingerprintResponse)
 async def get_job_fingerprint(job_id: str) -> JobFingerprintResponse:
     """Return the stored fingerprint metadata for a completed job."""
@@ -220,6 +396,13 @@ async def get_job_fingerprint(job_id: str) -> JobFingerprintResponse:
 @router.get("/{job_id}/platform-detection", response_model=PlatformDetectionResponse)
 async def get_platform_detection(job_id: str) -> Dict[str, Any]:
     """Return platform detection results and extracted entities for a job."""
+    
+    # Feature flag guard
+    if not _is_platform_detection_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Platform detection feature is not enabled"
+        )
     
     detection_result = await job_service.get_platform_detection(job_id)
     if detection_result is None:

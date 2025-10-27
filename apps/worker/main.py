@@ -13,7 +13,7 @@ from uuid import uuid4
 from core.config import settings
 from core.db.database import init_db, close_db
 from core.jobs.service import JobService
-from core.jobs.processor import JobProcessor
+from core.jobs.processor import JobProcessor, JobCancelledError
 from core.logging import setup_logging
 from core.metrics import setup_metrics
 
@@ -78,9 +78,10 @@ class Worker:
                 job = await self.job_service.get_next_pending_job()
                 
                 if job:
-                    logger.info(f"Processing job: {job.id}")
+                    job_id = str(job.id)
+                    logger.info(f"Processing job: {job_id}")
                     await self.job_service.create_job_event(
-                        job.id,
+                        job_id,
                         "worker-assigned",
                         {"worker_id": self.worker_id},
                     )
@@ -96,6 +97,7 @@ class Worker:
     
     async def _process_job(self, job):
         """Process a single job."""
+        job_id = str(job.id)
         try:
             # Process the job based on type
             if job.job_type == "rca_analysis":
@@ -108,23 +110,26 @@ class Worker:
                 raise ValueError(f"Unknown job type: {job.job_type}")
             
             # Update job with results
-            await self.job_service.complete_job(job.id, result)
+            await self.job_service.complete_job(job_id, result)
 
             try:
                 await emit_fingerprint_status(
                     self.job_service,
-                    str(job.id),
+                    job_id,
                     result.get("fingerprint"),
                     job_type=str(job.job_type),
                 )
             except Exception:  # pragma: no cover - telemetry must not block job completion
-                logger.exception("Failed to emit fingerprint status telemetry for job %s", job.id)
+                logger.exception("Failed to emit fingerprint status telemetry for job %s", job_id)
             
-            logger.info(f"Job completed successfully: {job.id}")
-            
+            logger.info(f"Job completed successfully: {job_id}")
+
+        except JobCancelledError as exc:
+            logger.info("Job %s cancelled during processing: %s", job_id, exc)
+            return
         except Exception as e:
-            logger.error(f"Job processing failed: {job.id}, error: {e}", exc_info=True)
-            await self.job_service.fail_job(job.id, str(e))
+            logger.error(f"Job processing failed: {job_id}, error: {e}", exc_info=True)
+            await self.job_service.fail_job(job_id, str(e))
 
 
 async def main():

@@ -7,11 +7,11 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, defer
 
 from core.config import settings
 from core.db.database import get_db_session
@@ -25,6 +25,7 @@ from core.db.models import (
     Ticket,
 )
 from core.jobs.event_bus import job_event_bus
+from core.cache.response_cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -149,14 +150,24 @@ class JobService:
             # Attach files if provided
             if file_ids:
                 from core.db.models import File
-                logger.info(f"Attaching {len(file_ids)} files to job {job.id}: {file_ids}")
+
+                logger.info(
+                    f"Attaching {len(file_ids)} files to job {job.id}: {file_ids}"
+                )
                 for file_id in file_ids:
                     file_obj = await session.get(File, file_id)
-                    if file_obj:
-                        logger.info(f"Attached file {file_id} to job {job.id}")
-                        file_obj.job_id = job.id
-                    else:
+                    if not file_obj:
                         logger.warning(f"File {file_id} not found in database!")
+                        continue
+
+                    # Reset file processing state so the new job reprocesses recycled files.
+                    file_record = cast(File, file_obj)
+                    setattr(file_record, "job_id", job.id)
+                    setattr(file_record, "processed", False)
+                    setattr(file_record, "processed_at", None)
+                    setattr(file_record, "processing_error", None)
+
+                    logger.info(f"Attached file {file_id} to job {job.id}")
             else:
                 logger.warning(f"No file_ids provided for job {job.id}")
             
@@ -176,21 +187,45 @@ class JobService:
             return job
     
     async def get_job(self, job_id: str) -> Optional[Job]:
-        """Get job by ID."""
+        """Get job by ID with full data (for detail views)."""
         async with self._session_factory() as session:
-            result = await session.execute(
+            stmt = (
                 select(Job)
                 .options(
+                    # Load relationships
                     selectinload(Job.files),
-                    selectinload(Job.documents),
+                    selectinload(Job.documents).defer(Document.content),
                     selectinload(Job.conversation_turns),
                     selectinload(Job.tickets),
                     selectinload(Job.fingerprint),
                 )
+                .execution_options(populate_existing=True)
                 .where(Job.id == job_id)
             )
-            return result.scalar_one_or_none()
+            result = await session.execute(stmt)
+            job = result.scalar_one_or_none()
+            
+            # Access all fields to ensure they're loaded before session closes
+            if job:
+                # Trigger loading of all non-deferred fields
+                _ = job.input_manifest
+                _ = job.result_data
+                _ = job.outputs
+                _ = job.model_config
+                _ = job.ticketing
+                _ = job.source
+                _ = job.error_message
+            
+            return job
     
+    async def get_job_status(self, job_id: str) -> Optional[str]:
+        """Return the current status for the job, or ``None`` when missing."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Job.status).where(Job.id == job_id)
+            )
+            return result.scalar_one_or_none()
+
     async def get_user_jobs(
         self,
         user_id: Optional[str] = None,
@@ -198,9 +233,13 @@ class JobService:
         limit: int = 100,
         offset: int = 0,
     ) -> List[Job]:
-        """Get jobs for a specific user or all jobs when user_id is omitted."""
+        """Get jobs for a specific user or all jobs when user_id is omitted (optimized for list views)."""
         async with self._session_factory() as session:
-            query = select(Job)
+            query = select(Job).options(
+                # Load files for list views
+                selectinload(Job.files)
+            )
+            query = query.execution_options(populate_existing=True)
 
             if user_id:
                 query = query.where(Job.user_id == user_id)
@@ -212,7 +251,19 @@ class JobService:
             query = query.limit(limit).offset(offset)
 
             result = await session.execute(query)
-            return result.scalars().all()
+            jobs = list(result.scalars().all())
+            
+            # Trigger loading of all fields before session closes
+            for job in jobs:
+                _ = job.input_manifest
+                _ = job.result_data
+                _ = job.outputs
+                _ = job.model_config
+                _ = job.ticketing
+                _ = job.source
+                _ = job.error_message
+            
+            return jobs
     
     async def get_next_pending_job(self) -> Optional[Job]:
         """Get next pending job for processing (with proper locking)."""
@@ -301,13 +352,30 @@ class JobService:
                 if not job:
                     return
 
-                job.status = status
-                job.updated_at = datetime.now(timezone.utc)
+                now = datetime.now(timezone.utc)
+                previous_status = getattr(job, "status", None)
+                setattr(job, "status", status)
+                setattr(job, "updated_at", now)
 
-                if status == "running" and not job.started_at:
-                    job.started_at = datetime.now(timezone.utc)
-                elif status in ["completed", "failed", "cancelled"] and not job.completed_at:
-                    job.completed_at = datetime.now(timezone.utc)
+                if status == "running":
+                    if previous_status in {"completed", "failed", "cancelled"}:
+                        setattr(job, "started_at", now)
+                    elif getattr(job, "started_at", None) is None:
+                        setattr(job, "started_at", now)
+                    setattr(job, "completed_at", None)
+                    setattr(job, "error_message", None)
+                    setattr(job, "result_data", None)
+                    setattr(job, "outputs", {})
+                elif status in ["pending", "draft"]:
+                    setattr(job, "started_at", None)
+                    setattr(job, "completed_at", None)
+                    setattr(job, "error_message", None)
+                    setattr(job, "result_data", None)
+                    setattr(job, "outputs", {})
+                elif status in ["completed", "failed", "cancelled"]:
+                    setattr(job, "completed_at", now)
+                    if status != "failed":
+                        setattr(job, "error_message", None)
 
                 event_data = {"status": status}
                 if data:
@@ -383,8 +451,11 @@ class JobService:
             logger.error("Failed job: %s, error: %s", job_id, error_message)
 
 
-    async def cancel_job(self, job_id: str, reason: str = "User cancelled"):
-        """Cancel a job."""
+    async def cancel_job(self, job_id: str, reason: str = "User cancelled") -> bool:
+        """Cancel a job.
+
+        Returns ``True`` when the state transition was applied, otherwise ``False``.
+        """
         async with self._session_factory() as session:
             async with session.begin():
                 result = await session.execute(
@@ -393,12 +464,12 @@ class JobService:
                 job = result.scalar_one_or_none()
 
                 if not job or job.status in ["completed", "failed", "cancelled"]:
-                    return
+                    return False
 
-                job.status = "cancelled"
-                job.error_message = reason
-                job.completed_at = datetime.now(timezone.utc)
-                job.updated_at = datetime.now(timezone.utc)
+                setattr(job, "status", "cancelled")
+                setattr(job, "error_message", reason)
+                setattr(job, "completed_at", datetime.now(timezone.utc))
+                setattr(job, "updated_at", datetime.now(timezone.utc))
 
                 await self.create_job_event(
                     job_id,
@@ -409,6 +480,121 @@ class JobService:
 
             await self._publish_session_events(session)
             logger.info("Cancelled job: %s, reason: %s", job_id, reason)
+            return True
+
+    async def pause_job(self, job_id: str, reason: str = "Paused from UI") -> bool:
+        """Pause a running job."""
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(select(Job).where(Job.id == job_id))
+                job = result.scalar_one_or_none()
+
+                if not job:
+                    return False
+
+                status = getattr(job, "status", None)
+                if status != "running":
+                    return False
+
+                setattr(job, "status", "paused")
+                setattr(job, "updated_at", datetime.now(timezone.utc))
+
+                await self.create_job_event(
+                    job_id,
+                    "paused",
+                    {"reason": reason},
+                    session=session,
+                )
+
+            await self._publish_session_events(session)
+            logger.info("Paused job: %s, reason: %s", job_id, reason)
+            return True
+
+    async def resume_job(self, job_id: str, note: str = "Resumed from UI") -> bool:
+        """Resume a paused job."""
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(select(Job).where(Job.id == job_id))
+                job = result.scalar_one_or_none()
+
+                if not job:
+                    return False
+
+                status = getattr(job, "status", None)
+                if status != "paused":
+                    return False
+
+                now = datetime.now(timezone.utc)
+                setattr(job, "status", "running")
+                setattr(job, "updated_at", now)
+
+                await self.create_job_event(
+                    job_id,
+                    "resumed",
+                    {"status": "running", "message": note},
+                    session=session,
+                )
+
+            await self._publish_session_events(session)
+            logger.info("Resumed job: %s", job_id)
+            return True
+
+    async def restart_job(self, job_id: str) -> Optional[Job]:
+        """Reset a completed job so it can be re-queued for processing."""
+
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(Job)
+                    .options(selectinload(Job.files))
+                    .where(Job.id == job_id)
+                )
+                job = result.scalar_one_or_none()
+
+                if not job:
+                    return None
+
+                previous_status = job.status
+                now = datetime.now(timezone.utc)
+
+                setattr(job, "status", "pending")
+                setattr(job, "started_at", None)
+                setattr(job, "completed_at", None)
+                setattr(job, "error_message", None)
+                setattr(job, "result_data", None)
+                setattr(job, "outputs", {})
+                setattr(job, "updated_at", now)
+                # Ensure the worker can pick the job up again even if automatic retries were exhausted.
+                setattr(
+                    job,
+                    "retry_count",
+                    min(job.retry_count or 0, max(job.max_retries - 1, 0)),
+                )
+
+                for file_record in getattr(job, "files", []) or []:
+                    setattr(file_record, "processed", False)
+                    setattr(file_record, "processed_at", None)
+                    setattr(file_record, "processing_error", None)
+
+                await self.create_job_event(
+                    job_id,
+                    "restart-requested",
+                    {
+                        "previous_status": previous_status,
+                    },
+                    session=session,
+                )
+
+                await self.create_job_event(
+                    job_id,
+                    "pending",
+                    {"status": "pending", "trigger": "restart"},
+                    session=session,
+                )
+
+            await self._publish_session_events(session)
+            logger.info("Restarted job %s (previous status: %s)", job_id, previous_status)
+            return job
 
     
     async def create_job_event(
@@ -466,7 +652,13 @@ class JobService:
             query = query.limit(limit)
             
             result = await session.execute(query)
-            return result.scalars().all()
+            events = list(result.scalars().all())
+            
+            # Trigger loading of all fields before session closes
+            for event in events:
+                _ = event.data
+            
+            return events
     
     async def get_job_events_since(
         self, 
@@ -483,7 +675,13 @@ class JobService:
             query = query.order_by(JobEvent.created_at.asc())
             
             result = await session.execute(query)
-            return result.scalars().all()
+            events = list(result.scalars().all())
+            
+            # Trigger loading of all fields before session closes
+            for event in events:
+                _ = event.data
+            
+            return events
 
     async def get_conversation(
         self,
@@ -500,10 +698,11 @@ class JobService:
             if limit:
                 query = query.limit(limit)
             result = await session.execute(query)
-            return result.scalars().all()
+            return list(result.scalars().all())
     
+    @cached(ttl=60, key_prefix="job_stats")  # Cache for 60 seconds
     async def get_job_statistics(self, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """Get job statistics."""
+        """Get job statistics (cached for 60 seconds)."""
         async with self._session_factory() as session:
             query = select(Job)
             
@@ -511,7 +710,7 @@ class JobService:
                 query = query.where(Job.user_id == user_id)
             
             result = await session.execute(query)
-            jobs = result.scalars().all()
+            jobs = list(result.scalars().all())
             
             stats = {
                 "total": len(jobs),
@@ -521,12 +720,14 @@ class JobService:
                 "success_rate": 0
             }
             
-            completed_jobs = [j for j in jobs if j.status == "completed"]
-            failed_jobs = [j for j in jobs if j.status == "failed"]
+            completed_jobs = [j for j in jobs if getattr(j, "status", None) == "completed"]
+            failed_jobs = [j for j in jobs if getattr(j, "status", None) == "failed"]
             
             # Status breakdown
             for job in jobs:
-                stats["by_status"][job.status] = stats["by_status"].get(job.status, 0) + 1
+                job_status = getattr(job, "status", None)
+                if job_status is not None:
+                    stats["by_status"][job_status] = stats["by_status"].get(job_status, 0) + 1
                 stats["by_type"][job.job_type] = stats["by_type"].get(job.job_type, 0) + 1
             
             # Success rate
@@ -553,7 +754,7 @@ class JobService:
                 )
             )
             
-            old_jobs = result.scalars().all()
+            old_jobs = list(result.scalars().all())
             deleted_count = len(old_jobs)
             
             for job in old_jobs:

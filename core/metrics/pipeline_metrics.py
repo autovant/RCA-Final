@@ -69,6 +69,13 @@ _EMBEDDING_CACHE_HITS = Counter(
     registry=registry,
 )
 
+_EMBEDDING_CACHE_EVICTIONS = Counter(
+    "rca_embedding_cache_evictions_total",
+    "Embedding cache eviction removals grouped by tenant, model, and policy.",
+    ("tenant_id", "model", "policy"),
+    registry=registry,
+)
+
 _SIZE_BUCKETS = (
     (100 * 1024, "tiny"),       # <= 100 KiB
     (1 * 1024 * 1024, "small"),  # <= 1 MiB
@@ -232,6 +239,7 @@ class PipelineMetricsCollector:
         self.storage = PipelineStageMetrics("storage")
         self.embedding_cache_requests = _EMBEDDING_CACHE_REQUESTS
         self.embedding_cache_hits = _EMBEDDING_CACHE_HITS
+        self.embedding_cache_evictions = _EMBEDDING_CACHE_EVICTIONS
 
     def for_stage(self, stage: str) -> PipelineStageMetrics:
         mapping = {
@@ -259,6 +267,25 @@ class PipelineMetricsCollector:
         self.embedding_cache_requests.labels(tenant_id=tenant_id, model=model, result=result).inc()
         if hit:
             self.embedding_cache_hits.labels(tenant_id=tenant_id, model=model).inc()
+
+    def record_cache_eviction(
+        self,
+        *,
+        tenant_id: str,
+        model: str,
+        count: int,
+        policy: str,
+    ) -> None:
+        """Record eviction activity for cached embeddings."""
+
+        if count <= 0:
+            return
+        policy_label = policy or "unknown"
+        self.embedding_cache_evictions.labels(
+            tenant_id=tenant_id,
+            model=model or "unknown",
+            policy=policy_label,
+        ).inc(count)
 
 
 __all__ = [

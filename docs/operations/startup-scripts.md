@@ -2,6 +2,18 @@
 
 The repository has been cleaned up from **58 scripts** down to **8 essential scripts** in the root directory.
 
+## ⚠️ Docker via WSL Required
+
+**All scripts in this document use Docker Engine INSIDE WSL 2, NOT Docker Desktop on Windows.**
+
+- Docker Desktop is typically blocked in enterprise environments
+- Scripts invoke `wsl.exe` to run `docker compose` inside your WSL distribution
+- Before using any startup script, verify Docker works in WSL:
+  ```powershell
+  wsl.exe -e docker ps
+  ```
+- If this command fails, [install Docker inside WSL](../getting-started/dev-setup.md#installing-docker-in-wsl-if-needed)
+
 ## Active Scripts (Root Directory)
 
 These are the only scripts you need for daily development:

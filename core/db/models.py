@@ -118,14 +118,14 @@ class Job(Base):
         Index("ix_jobs_status_created_at", "status", "created_at"),
         Index("ix_jobs_user_id_status", "user_id", "status"),
         CheckConstraint(
-            "status IN ('draft', 'pending', 'running', 'completed', 'failed', 'cancelled')",
+            "status IN ('draft', 'pending', 'running', 'paused', 'completed', 'failed', 'cancelled')",
             name="valid_job_status",
         ),
     )
 
     @validates("status")
     def validate_status(self, _key, value: str) -> str:
-        allowed = {"draft", "pending", "running", "completed", "failed", "cancelled"}
+        allowed = {"draft", "pending", "running", "paused", "completed", "failed", "cancelled"}
         if value not in allowed:
             raise ValueError(f"Invalid status: {value}")
         return value

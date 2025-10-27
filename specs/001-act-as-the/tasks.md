@@ -108,15 +108,15 @@
 
 ### Embedding Cache - Eviction Job
 
-- [ ] T045 [P] [P1] Create `apps/worker/tasks/cache_eviction.py` async task acquiring Postgres advisory lock before eviction execution
-- [ ] T046 [P1] Implement eviction policy: remove entries with hit_count=0 AND created_at > 90 days, emit eviction count metrics
-- [ ] T047 [P1] Add cache hit rate calculation logic: only schedule eviction when tenant hit rate ≥30%
-- [ ] T048 [P1] Implement graceful lock failure handling: exit with INFO log "Eviction already in progress" when lock unavailable
+- [x] T045 [P] [P1] Create `apps/worker/tasks/cache_eviction.py` async task acquiring Postgres advisory lock before eviction execution
+- [x] T046 [P1] Implement eviction policy: remove entries with hit_count=0 AND created_at > 90 days, emit eviction count metrics
+- [x] T047 [P1] Add cache hit rate calculation logic: only schedule eviction when tenant hit rate ≥30%
+- [x] T048 [P1] Implement graceful lock failure handling: exit with INFO log "Eviction already in progress" when lock unavailable
 - [ ] T049 [P1] Integrate eviction task into existing worker job queue with configurable scheduling (daily/weekly)
 
 ### Feature Flags & Admin API
 
-- [ ] T050 [P] [P1] Extend `core/config/feature_flags.py` with `embedding_cache_enabled` and `embedding_cache_eviction_enabled` flags (defaults: false)
+- [x] T050 [P] [P1] Extend `core/config/feature_flags.py` with `embedding_cache_enabled` and `embedding_cache_eviction_enabled` flags (defaults: false)
 - [ ] T051 [P] [P1] Create `apps/api/routers/admin_feature_flags.py` implementing GET/PUT `/admin/tenants/{tenant_id}/feature-flags` per contracts/pipeline.yaml
 - [ ] T052 [P] [P1] Implement POST `/admin/embedding-cache/tenants/{tenant_id}/evict` endpoint with TTL parameter validation
 - [ ] T053 [P] [P1] Add authorization middleware ensuring only admin users can modify feature flags and trigger eviction

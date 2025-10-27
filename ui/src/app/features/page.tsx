@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui";
+import { InteractivePiiDemo } from "@/components/features/InteractivePiiDemo";
 
 // Feature data structure
 type Feature = {
@@ -15,6 +16,7 @@ type Feature = {
   capabilities: string[];
   useCases: string[];
   status?: "stable" | "beta" | "new";
+  categories: string[];
 };
 
 // Feature definitions
@@ -46,7 +48,8 @@ const features: Feature[] = [
       "PEGA workflow errors",
       "Custom automation log analysis"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["AI & Analysis", "UI & Experience"],
   },
   {
     id: "multi-llm",
@@ -75,7 +78,8 @@ const features: Feature[] = [
       "Enterprise AWS Bedrock integration",
       "Hybrid multi-cloud strategies"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["AI & Analysis", "Platform Services"],
   },
   {
     id: "pii-redaction",
@@ -114,7 +118,8 @@ const features: Feature[] = [
       "Multi-tenant SaaS with strict data isolation",
       "Security incident investigation with credential exposure"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Security & Compliance"],
   },
   {
     id: "itsm-ticketing",
@@ -144,7 +149,8 @@ const features: Feature[] = [
       "Executive escalation workflows",
       "SLA-driven ticket creation"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Integrations"],
   },
   {
     id: "file-watcher",
@@ -175,7 +181,8 @@ const features: Feature[] = [
       "Production incident detection",
       "Multi-environment watching"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Automation & Watchers", "Platform Services"],
   },
   {
     id: "sse-streaming",
@@ -205,7 +212,8 @@ const features: Feature[] = [
       "Event-driven UI updates",
       "Executive briefing displays"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Platform Services", "Automation & Watchers"],
   },
   {
     id: "structured-outputs",
@@ -236,7 +244,8 @@ const features: Feature[] = [
       "Integration with other systems",
       "Historical analysis storage"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Reporting & Outputs", "AI & Analysis"],
   },
   {
     id: "observability",
@@ -266,7 +275,8 @@ const features: Feature[] = [
       "Capacity planning",
       "Incident analysis"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Observability", "Platform Services"],
   },
   {
     id: "executive-ui",
@@ -297,7 +307,8 @@ const features: Feature[] = [
       "Incident command centers",
       "Mobile monitoring"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["UI & Experience", "Platform Services"],
   },
   {
     id: "platform-detection",
@@ -327,7 +338,8 @@ const features: Feature[] = [
       "Specialized analysis paths",
       "Platform migration tracking"
     ],
-    status: "beta"
+    status: "beta",
+    categories: ["AI & Analysis"],
   },
   {
     id: "archive-support",
@@ -337,7 +349,7 @@ const features: Feature[] = [
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
       </svg>
     ),
-    description: "Native support for ZIP, TAR, and compressed archives with secure extraction and automatic content processing.",
+    description: "Native support for ZIP, TAR, 7z, RAR, ISO, and other compressed archives with secure extraction and automatic content processing.",
     benefits: [
       "Bulk file processing",
       "Secure extraction",
@@ -345,9 +357,10 @@ const features: Feature[] = [
       "Nested archive support"
     ],
     capabilities: [
-      "ZIP file extraction",
+      "ZIP/7z/RAR file extraction",
       "TAR archive processing",
-      "GZIP/BZ2 decompression",
+      "GZIP/BZ2/XZ decompression",
+      "ISO disk image support",
       "Path traversal prevention",
       "Size limit enforcement"
     ],
@@ -357,7 +370,8 @@ const features: Feature[] = [
       "Automated log collection",
       "Multi-file investigations"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Data Ingestion", "Automation & Watchers"],
   },
   {
     id: "security",
@@ -388,13 +402,156 @@ const features: Feature[] = [
       "Regulated industries",
       "Zero-trust networks"
     ],
-    status: "stable"
+    status: "stable",
+    categories: ["Security & Compliance", "Platform Services"],
   }
 ];
 
+const CATEGORY_ORDER = [
+  "AI & Analysis",
+  "Security & Compliance",
+  "Integrations",
+  "Automation & Watchers",
+  "Platform Services",
+  "Reporting & Outputs",
+  "Observability",
+  "UI & Experience",
+  "Data Ingestion",
+];
+
+const STATUS_LABELS: Record<NonNullable<Feature["status"]>, string> = {
+  stable: "Stable",
+  beta: "Beta",
+  new: "New",
+};
+
+type FeatureStatus = NonNullable<Feature["status"]>;
+
 export default function FeaturesPage() {
-  const [selectedFeature, setSelectedFeature] = useState<Feature>(features[0]);
+  const [selectedFeature, setSelectedFeature] = useState<Feature | null>(features[0] ?? null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilters, setStatusFilters] = useState<FeatureStatus[]>([]);
+  const [categoryFilters, setCategoryFilters] = useState<string[]>([]);
+
+  const statusOptions = useMemo<FeatureStatus[]>(() => {
+    const statuses = new Set<FeatureStatus>();
+    features.forEach((feature) => {
+      statuses.add((feature.status ?? "stable") as FeatureStatus);
+    });
+    return Array.from(statuses).sort((a, b) => STATUS_LABELS[a].localeCompare(STATUS_LABELS[b]));
+  }, []);
+
+  const allCategories = useMemo<string[]>(() => {
+    const set = new Set<string>();
+    features.forEach((feature) => {
+      feature.categories.forEach((category) => set.add(category));
+    });
+    const extras = Array.from(set).filter((category) => !CATEGORY_ORDER.includes(category)).sort();
+    const ordered = CATEGORY_ORDER.filter((category) => set.has(category));
+    return [...ordered, ...extras];
+  }, []);
+
+  const filteredFeatures = useMemo<Feature[]>(() => {
+    const term = searchTerm.trim().toLowerCase();
+    return features.filter((feature) => {
+      const featureStatus = (feature.status ?? "stable") as FeatureStatus;
+      if (statusFilters.length > 0 && !statusFilters.includes(featureStatus)) {
+        return false;
+      }
+      if (categoryFilters.length > 0 && !feature.categories.some((category) => categoryFilters.includes(category))) {
+        return false;
+      }
+      if (!term) {
+        return true;
+      }
+
+      const haystack = [
+        feature.title,
+        feature.description,
+        feature.categories.join(" "),
+        ...feature.benefits,
+        ...feature.capabilities,
+        ...feature.useCases,
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(term);
+    });
+  }, [categoryFilters, searchTerm, statusFilters]);
+
+  const filteredCategoryOrder = useMemo<string[]>(() => {
+    const set = new Set<string>();
+    filteredFeatures.forEach((feature) => {
+      if (feature.categories.length > 0) {
+        set.add(feature.categories[0]);
+      }
+    });
+    const extras = Array.from(set).filter((category) => !CATEGORY_ORDER.includes(category)).sort();
+    const ordered = CATEGORY_ORDER.filter((category) => set.has(category));
+    return [...ordered, ...extras];
+  }, [filteredFeatures]);
+
+  const featuresByCategory = useMemo(() => {
+    const map = new Map<string, Feature[]>();
+    filteredFeatures.forEach((feature) => {
+      const categoryKey = feature.categories[0] ?? "Other";
+      if (!map.has(categoryKey)) {
+        map.set(categoryKey, []);
+      }
+      map.get(categoryKey)!.push(feature);
+    });
+
+    return filteredCategoryOrder
+      .map((category) => ({
+        category,
+        items: (map.get(category) ?? []).sort((a, b) => a.title.localeCompare(b.title)),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [filteredCategoryOrder, filteredFeatures]);
+
+  useEffect(() => {
+    if (filteredFeatures.length === 0) {
+      setSelectedFeature(null);
+      return;
+    }
+
+    if (!selectedFeature || !filteredFeatures.some((feature) => feature.id === selectedFeature.id)) {
+      setSelectedFeature(filteredFeatures[0]);
+    }
+  }, [filteredFeatures, selectedFeature]);
+
+  const hasActiveFilters = searchTerm.trim().length > 0 || statusFilters.length > 0 || categoryFilters.length > 0;
+
+  const toggleStatusFilter = (status: FeatureStatus) => {
+    setStatusFilters((previous) =>
+      previous.includes(status)
+        ? previous.filter((value) => value !== status)
+        : [...previous, status]
+    );
+  };
+
+  const toggleCategoryFilter = (category: string) => {
+    setCategoryFilters((previous) =>
+      previous.includes(category)
+        ? previous.filter((value) => value !== category)
+        : [...previous, category]
+    );
+  };
+
+  const clearFilters = () => {
+    setSearchTerm("");
+    setStatusFilters([]);
+    setCategoryFilters([]);
+  };
+
+  const handleFeatureSelection = (feature: Feature) => {
+    setSelectedFeature(feature);
+    if (typeof window !== "undefined" && window.innerWidth < 1024) {
+      setIsSidebarOpen(false);
+    }
+  };
 
   const getStatusBadge = (status?: string) => {
     switch (status) {
@@ -467,185 +624,328 @@ export default function FeaturesPage() {
               isSidebarOpen ? "block" : "hidden"
             } lg:block transition-all duration-300`}
           >
-            <div className="card sticky top-24 p-4 max-h-[calc(100vh-8rem)] overflow-y-auto">
-              <h2 className="text-sm font-semibold text-dark-text-tertiary uppercase tracking-wider mb-4">
-                Features
-              </h2>
-              <nav className="space-y-1">
-                {features.map((feature) => (
+            <div className="card sticky top-24 max-h-[calc(100vh-8rem)] overflow-y-auto p-4 space-y-5">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-dark-text-tertiary uppercase tracking-wider">
+                  Browse Features
+                </h2>
+                {hasActiveFilters && (
                   <button
-                    key={feature.id}
-                    onClick={() => {
-                      setSelectedFeature(feature);
-                      if (window.innerWidth < 1024) {
-                        setIsSidebarOpen(false);
-                      }
-                    }}
-                    className={`w-full text-left px-3 py-3 rounded-lg transition-all duration-200 flex items-start gap-3 group ${
-                      selectedFeature.id === feature.id
-                        ? "bg-gradient-to-r from-fluent-blue-500/20 to-fluent-info/10 text-dark-text-primary border border-fluent-blue-500/40"
-                        : "hover:bg-dark-bg-elevated/50 text-dark-text-secondary hover:text-dark-text-primary"
-                    }`}
+                    type="button"
+                    onClick={clearFilters}
+                    className="text-[11px] font-semibold text-fluent-blue-300 hover:text-fluent-blue-100"
                   >
-                    <div
-                      className={`mt-0.5 ${
-                        selectedFeature.id === feature.id
-                          ? "text-fluent-blue-400"
-                          : "text-dark-text-tertiary group-hover:text-fluent-blue-400"
-                      }`}
-                    >
-                      {feature.icon}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">
-                        {feature.title}
-                      </div>
-                      {feature.status && feature.status !== "stable" && (
-                        <span className={`mt-1 inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
-                          feature.status === "beta"
-                            ? "bg-fluent-warning/20 text-fluent-warning"
-                            : "bg-fluent-success/20 text-fluent-success"
-                        }`}>
-                          {feature.status.toUpperCase()}
-                        </span>
-                      )}
-                    </div>
+                    Clear
                   </button>
-                ))}
+                )}
+              </div>
+
+              <div>
+                <label htmlFor="feature-search" className="sr-only">
+                  Search features
+                </label>
+                <div className="relative">
+                  <svg
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-dark-text-tertiary"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 100-15 7.5 7.5 0 000 15z"
+                    />
+                  </svg>
+                  <input
+                    id="feature-search"
+                    type="search"
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Search capabilities..."
+                    className="w-full rounded-lg border border-dark-border/40 bg-dark-bg-tertiary/70 py-2 pl-9 pr-3 text-sm text-dark-text-primary placeholder:text-dark-text-tertiary focus:border-fluent-blue-500/60 focus:outline-none focus:ring-1 focus:ring-fluent-blue-500/40"
+                  />
+                </div>
+              </div>
+
+              {statusOptions.length > 1 && (
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-dark-text-tertiary">
+                    Status
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {statusOptions.map((status) => {
+                      const isActive = statusFilters.includes(status);
+                      return (
+                        <button
+                          key={status}
+                          type="button"
+                          onClick={() => toggleStatusFilter(status)}
+                          className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                            isActive
+                              ? "border-fluent-blue-500/60 bg-fluent-blue-500/20 text-fluent-blue-100"
+                              : "border-dark-border/40 bg-dark-bg-tertiary/70 text-dark-text-tertiary hover:border-fluent-blue-500/40 hover:text-dark-text-primary"
+                          }`}
+                        >
+                          {STATUS_LABELS[status]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-dark-text-tertiary">
+                  Categories
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {allCategories.map((category) => {
+                    const isActive = categoryFilters.includes(category);
+                    return (
+                      <button
+                        key={category}
+                        type="button"
+                        onClick={() => toggleCategoryFilter(category)}
+                        className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                          isActive
+                            ? "border-fluent-info/60 bg-fluent-info/20 text-fluent-info"
+                            : "border-dark-border/40 bg-dark-bg-tertiary/70 text-dark-text-tertiary hover:border-fluent-info/40 hover:text-dark-text-primary"
+                        }`}
+                      >
+                        {category}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="h-px bg-dark-border/40" />
+
+              <nav className="space-y-4">
+                {featuresByCategory.length === 0 ? (
+                  <p className="text-xs text-dark-text-tertiary">
+                    No features match the current filters.
+                  </p>
+                ) : (
+                  featuresByCategory.map(({ category, items }) => (
+                    <div key={category}>
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-dark-text-tertiary">
+                        {category}
+                      </p>
+                      <div className="space-y-1">
+                        {items.map((feature) => {
+                          const isSelected = selectedFeature?.id === feature.id;
+                          return (
+                            <button
+                              key={feature.id}
+                              type="button"
+                              onClick={() => handleFeatureSelection(feature)}
+                              className={`w-full text-left px-3 py-3 rounded-lg transition-all duration-200 flex items-start gap-3 group ${
+                                isSelected
+                                  ? "bg-gradient-to-r from-fluent-blue-500/20 to-fluent-info/10 text-dark-text-primary border border-fluent-blue-500/40"
+                                  : "hover:bg-dark-bg-elevated/50 text-dark-text-secondary hover:text-dark-text-primary"
+                              }`}
+                            >
+                              <div
+                                className={`mt-0.5 ${
+                                  isSelected
+                                    ? "text-fluent-blue-400"
+                                    : "text-dark-text-tertiary group-hover:text-fluent-blue-400"
+                                }`}
+                              >
+                                {feature.icon}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-medium truncate">
+                                  {feature.title}
+                                </div>
+                                {feature.status && feature.status !== "stable" && (
+                                  <span
+                                    className={`mt-1 inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
+                                      feature.status === "beta"
+                                        ? "bg-fluent-warning/20 text-fluent-warning"
+                                        : "bg-fluent-success/20 text-fluent-success"
+                                    }`}
+                                  >
+                                    {feature.status.toUpperCase()}
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))
+                )}
               </nav>
             </div>
           </aside>
 
           {/* Content Area */}
           <main className="lg:col-span-9">
-            <div className="card p-8 animate-fade-in">
-              {/* Feature Header */}
-              <div className="flex items-start gap-4 mb-6 pb-6 border-b border-dark-border/40">
-                <div className="p-4 rounded-2xl bg-gradient-to-br from-fluent-blue-500/20 to-fluent-info/10 text-fluent-blue-400 border border-fluent-blue-500/30">
-                  {selectedFeature.icon}
-                </div>
-                <div className="flex-1">
-                  <h2 className="text-3xl font-bold text-dark-text-primary flex items-center">
-                    {selectedFeature.title}
-                    {getStatusBadge(selectedFeature.status)}
-                  </h2>
-                  <p className="mt-2 text-lg text-dark-text-secondary">
-                    {selectedFeature.description}
-                  </p>
-                </div>
-              </div>
+            {selectedFeature ? (
+              <>
+                <div className="card p-8 animate-fade-in">
+                  {/* Feature Header */}
+                  <div className="mb-6 flex items-start gap-4 border-b border-dark-border/40 pb-6">
+                    <div className="rounded-2xl border border-fluent-blue-500/30 bg-gradient-to-br from-fluent-blue-500/20 to-fluent-info/10 p-4 text-fluent-blue-400">
+                      {selectedFeature.icon}
+                    </div>
+                    <div className="flex-1">
+                      <h2 className="text-3xl font-bold text-dark-text-primary flex items-center">
+                        {selectedFeature.title}
+                        {getStatusBadge(selectedFeature.status)}
+                      </h2>
+                      <p className="mt-2 text-lg text-dark-text-secondary">
+                        {selectedFeature.description}
+                      </p>
+                    </div>
+                  </div>
 
-              {/* Benefits Section */}
-              <div className="mb-8">
-                <h3 className="text-xl font-semibold text-dark-text-primary mb-4 flex items-center gap-2">
-                  <svg className="w-5 h-5 text-fluent-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  Key Benefits
-                </h3>
-                <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {selectedFeature.benefits.map((benefit, index) => (
-                    <li
-                      key={index}
-                      className="flex items-start gap-3 p-3 rounded-lg bg-dark-bg-elevated/30 border border-dark-border/20 hover:border-fluent-blue-500/30 transition-colors"
-                    >
-                      <svg
-                        className="w-5 h-5 text-fluent-success mt-0.5 flex-shrink-0"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
+                  {/* Benefits Section */}
+                  <div className="mb-8">
+                    <h3 className="mb-4 flex items-center gap-2 text-xl font-semibold text-dark-text-primary">
+                      <svg className="h-5 w-5 text-fluent-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      Key Benefits
+                    </h3>
+                    <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {selectedFeature.benefits.map((benefit, index) => (
+                        <li
+                          key={index}
+                          className="flex items-start gap-3 rounded-lg border border-dark-border/20 bg-dark-bg-elevated/30 p-3 transition-colors hover:border-fluent-blue-500/30"
+                        >
+                          <svg
+                            className="h-5 w-5 flex-shrink-0 text-fluent-success"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          <span className="text-dark-text-secondary">{benefit}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Capabilities Section */}
+                  <div className="mb-8">
+                    <h3 className="mb-4 flex items-center gap-2 text-xl font-semibold text-dark-text-primary">
+                      <svg className="h-5 w-5 text-fluent-info" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      Technical Capabilities
+                    </h3>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedFeature.capabilities.map((capability, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center rounded-lg border border-fluent-blue-500/20 bg-gradient-to-r from-fluent-blue-500/10 to-fluent-info/5 px-3 py-2 text-sm font-medium text-dark-text-primary transition-colors hover:border-fluent-blue-500/40"
+                        >
+                          {capability}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Use Cases Section */}
+                  <div>
+                    <h3 className="mb-4 flex items-center gap-2 text-xl font-semibold text-dark-text-primary">
+                      <svg className="h-5 w-5 text-fluent-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                      Common Use Cases
+                    </h3>
+                    <ul className="space-y-3">
+                      {selectedFeature.useCases.map((useCase, index) => (
+                        <li
+                          key={index}
+                          className="flex items-start gap-3 rounded-lg border border-dark-border/20 bg-dark-bg-elevated/30 p-4 transition-all hover:border-fluent-warning/30 hover:shadow-fluent"
+                        >
+                          <div className="mt-0.5 rounded-full bg-fluent-warning/20 p-1 text-fluent-warning">
+                            <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                          <span className="flex-1 text-dark-text-secondary">{useCase}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Interactive PII Demo - Only show for PII Redaction feature */}
+                {selectedFeature.id === "pii-redaction" && (
+                  <div className="mt-8 card p-6 bg-gradient-to-br from-blue-50/50 to-purple-50/50 dark:from-blue-900/10 dark:to-purple-900/10 border-2 border-blue-200/50 dark:border-blue-800/50">
+                    <InteractivePiiDemo />
+                  </div>
+                )}
+
+                {/* Call to Action */}
+                <div className="mt-6 card border-fluent-blue-500/30 bg-gradient-to-r from-fluent-blue-500/10 via-fluent-info/5 to-transparent p-6">
+                  <div className="flex flex-col items-center justify-between gap-4 md:flex-row">
+                    <div>
+                      <h3 className="mb-1 text-lg font-semibold text-dark-text-primary">
+                        Ready to explore {selectedFeature.title}?
+                      </h3>
+                      <p className="text-sm text-dark-text-tertiary">
+                        Try it out in the investigation panel or review the documentation for integration guidance.
+                      </p>
+                    </div>
+                    <div className="flex gap-3">
+                      <Button
+                        variant="primary"
+                        onClick={() => {
+                          window.location.href = "/investigation";
+                        }}
+                        icon={
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                          </svg>
+                        }
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      <span className="text-dark-text-secondary">{benefit}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              {/* Capabilities Section */}
-              <div className="mb-8">
-                <h3 className="text-xl font-semibold text-dark-text-primary mb-4 flex items-center gap-2">
-                  <svg className="w-5 h-5 text-fluent-info" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  Technical Capabilities
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {selectedFeature.capabilities.map((capability, index) => (
-                    <span
-                      key={index}
-                      className="inline-flex items-center px-3 py-2 rounded-lg bg-gradient-to-r from-fluent-blue-500/10 to-fluent-info/5 text-dark-text-primary border border-fluent-blue-500/20 text-sm font-medium hover:border-fluent-blue-500/40 transition-colors"
-                    >
-                      {capability}
-                    </span>
-                  ))}
+                        Try Now
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          window.location.href = "/docs";
+                        }}
+                        icon={
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                          </svg>
+                        }
+                      >
+                        Documentation
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-
-              {/* Use Cases Section */}
-              <div>
-                <h3 className="text-xl font-semibold text-dark-text-primary mb-4 flex items-center gap-2">
-                  <svg className="w-5 h-5 text-fluent-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                  </svg>
-                  Common Use Cases
-                </h3>
-                <ul className="space-y-3">
-                  {selectedFeature.useCases.map((useCase, index) => (
-                    <li
-                      key={index}
-                      className="flex items-start gap-3 p-4 rounded-lg bg-dark-bg-elevated/30 border border-dark-border/20 hover:border-fluent-warning/30 transition-all hover:shadow-fluent"
-                    >
-                      <div className="p-1 rounded-full bg-fluent-warning/20 text-fluent-warning mt-0.5">
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                      <span className="text-dark-text-secondary flex-1">{useCase}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-
-            {/* Call to Action */}
-            <div className="mt-6 card p-6 bg-gradient-to-r from-fluent-blue-500/10 via-fluent-info/5 to-transparent border-fluent-blue-500/30">
-              <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-dark-text-primary mb-1">
-                    Ready to explore {selectedFeature.title}?
-                  </h3>
-                  <p className="text-sm text-dark-text-tertiary">
-                    Try it out in the investigation panel or check the documentation for detailed integration guides.
-                  </p>
+              </>
+            ) : (
+              <div className="card flex flex-col items-center justify-center gap-3 p-12 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full border border-dark-border/60 bg-dark-bg-tertiary/70 text-2xl">
+                  🔍
                 </div>
-                <div className="flex gap-3">
-                  <Button
-                    variant="primary"
-                    onClick={() => window.location.href = "/investigation"}
-                    icon={
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                      </svg>
-                    }
-                  >
-                    Try Now
+                <h2 className="text-xl font-semibold text-dark-text-primary">
+                  Adjust your filters to view features
+                </h2>
+                <p className="max-w-md text-sm text-dark-text-tertiary">
+                  No features match the current search and filter combination. Try broadening your search or clearing filters to explore the full catalog.
+                </p>
+                {hasActiveFilters && (
+                  <Button variant="primary" onClick={clearFilters}>
+                    Clear Filters
                   </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => window.location.href = "/docs"}
-                    icon={
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                      </svg>
-                    }
-                  >
-                    Documentation
-                  </Button>
-                </div>
+                )}
               </div>
-            </div>
+            )}
           </main>
         </div>
       </div>

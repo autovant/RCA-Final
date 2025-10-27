@@ -2,12 +2,24 @@
 
 Boot the entire RCA Engine stack locally in minutes. This guide assumes you are using Windows with PowerShell.
 
+## ⚠️ Critical Prerequisite: Docker in WSL
+
+**This project requires Docker Engine running INSIDE WSL 2, NOT Docker Desktop on Windows.**
+
+Docker Desktop is typically blocked in enterprise environments. All scripts use `wsl.exe` to invoke Docker inside your WSL distribution.
+
+**Verify before proceeding:**
+```powershell
+wsl.exe -e docker ps
+```
+If this fails, see [Installing Docker in WSL](dev-setup.md#installing-docker-in-wsl-if-needed).
+
 ## First-Time Prep
 
 1. Install prerequisites:
    - Python 3.11+
    - Node.js 18+
-   - WSL 2 with Docker Engine (Docker Desktop or native daemon)
+   - **WSL 2 with Docker Engine inside WSL** (NOT Docker Desktop)
 2. Clone the repository and copy environment defaults:
    ```powershell
    git clone https://github.com/<org>/RCA-Final.git

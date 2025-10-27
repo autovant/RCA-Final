@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("aiofiles")
 
 from core.files import DetectionInput
+from core.files.telemetry import PipelineStage
 from core.jobs.models import (
     FingerprintStatus,
     IncidentFingerprintDTO,
@@ -146,6 +147,18 @@ class _FakeSessionContext:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+
+class _StubCacheSession:
+    def __init__(self):
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self):  # pragma: no cover - simple counter
+        self.commits += 1
+
+    async def rollback(self):  # pragma: no cover - simple counter
+        self.rollbacks += 1
 
 
 def _summary(file_id: str, filename: str, errors: int, warnings: int) -> FileSummary:
@@ -481,6 +494,125 @@ async def test_generate_embeddings_batches_requests(monkeypatch):
 
     assert service.calls == [["one", "two"], ["three"]]
     assert [value[0] for value in vectors] == [3.0, 3.0, 5.0]
+
+
+@pytest.mark.asyncio
+async def test_generate_embeddings_records_cache_stage(monkeypatch):
+    settings_stub = _stub_ingestion_settings(EMBED_BATCH_SIZE=2)
+
+    class _Flags:
+        @staticmethod
+        def is_enabled(key: str) -> bool:
+            return key == "embedding_cache_enabled"
+
+    settings_stub.feature_flags = _Flags()  # type: ignore[attr-defined]
+    monkeypatch.setattr("core.jobs.processor.settings", settings_stub)
+
+    job_service = StubJobService()
+    processor = JobProcessor(cast(JobService, job_service))
+
+    class _StubEmbeddingService:
+        def __init__(self):
+            self.calls = []
+            self.provider = SimpleNamespace(provider_name="stub-provider", model="stub-model")
+
+        async def embed_texts(self, batch):
+            self.calls.append(list(batch))
+            return [[float(len(item))] for item in batch]
+
+    embedding_service = _StubEmbeddingService()
+
+    async def _ensure_service():
+        return embedding_service
+
+    monkeypatch.setattr(processor, "_ensure_embedding_service", _ensure_service)
+
+    class _StubEmbeddingCacheService:
+        def __init__(self, session, metrics):
+            self.session = session
+            self.metrics = metrics
+            self.lookup_hashes: List[str] = []
+            self.store_payloads: List[str] = []
+
+        async def lookup(self, tenant_id, content_hash, model):
+            self.lookup_hashes.append(content_hash)
+            if len(self.lookup_hashes) == 1:
+                return SimpleNamespace(embedding=[42.0])
+            return None
+
+        async def store(
+            self,
+            tenant_id,
+            content_hash,
+            model,
+            *,
+            embedding_vector_id,
+            scrub_metadata,
+            embedding,
+            expires_at=None,
+        ):
+            self.store_payloads.append(content_hash)
+            return SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr("core.jobs.processor.EmbeddingCacheService", _StubEmbeddingCacheService)
+
+    cache_session = _StubCacheSession()
+    processor._session_factory = lambda: _FakeSessionContext(cache_session)  # type: ignore[assignment]
+
+    recorded_events: List[dict[str, Any]] = []
+
+    async def _record_stage_event_stub(self, session_arg, job_id_arg, context_arg, **kwargs):
+        recorded_events.append(
+            {
+                "session": session_arg,
+                "job_id": job_id_arg,
+                "context": context_arg,
+                **kwargs,
+            }
+        )
+
+    monkeypatch.setattr(JobProcessor, "_record_stage_event", _record_stage_event_stub)
+
+    tenant_id = uuid.uuid4()
+    context = cast(
+        Any,
+        SimpleNamespace(
+            tenant_label=str(tenant_id),
+            tenant_uuid=tenant_id,
+            job_uuid=uuid.uuid4(),
+            file_uuid=uuid.uuid4(),
+            platform="worker",
+            file_type="log",
+            feature_flags=["embedding_cache_enabled"],
+            telemetry_enabled=True,
+            metrics_enabled=True,
+            size_bytes=128,
+        ),
+    )
+
+    session_stub = cast(Any, SimpleNamespace())
+
+    vectors = await processor._generate_embeddings(
+        ["cached-chunk", "fresh-chunk"],
+        context=context,
+        pii_scrubbed=True,
+        session=session_stub,
+        job_id="job-telemetry",
+        cache_details={"file_id": "file-123"},
+    )
+
+    assert recorded_events, "expected cache stage telemetry to be recorded"
+    event = recorded_events[0]
+    assert event["job_id"] == "job-telemetry"
+    assert event["stage"] is PipelineStage.CACHE
+    metadata = event["metadata"]
+    assert metadata["lookup_count"] == 2
+    assert metadata["hit_count"] == 1
+    assert metadata["miss_count"] == 1
+    assert metadata["store_count"] == 1
+    assert metadata["store_committed"] is True
+    assert vectors[0] == [42.0]
+    assert vectors[1] == [float(len("fresh-chunk"))]
 
 
 @pytest.mark.asyncio

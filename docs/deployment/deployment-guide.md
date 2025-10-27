@@ -2,6 +2,8 @@
 
 This guide consolidates the legacy Docker deployment notes and checklists into a single workflow suitable for staging or production.
 
+> **📊 Visual Reference**: See the [Deployment Topology Diagram](../diagrams/deployment.md) for a complete infrastructure overview showing WSL 2, Docker containers, network configuration, and port mappings.
+
 ## Prerequisites
 
 - Docker Engine 24.x+ and Docker Compose v2.x (Desktop integration or server installation)

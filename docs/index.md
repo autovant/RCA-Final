@@ -9,6 +9,16 @@ Welcome to the consolidated documentation hub for the RCA Engine. Use the sectio
 ## Getting Started
 - [Quickstart checklist](getting-started/quickstart.md)
 - [Developer environment setup](getting-started/dev-setup.md)
+- [Scripts & automation guide](../scripts/README.md) 🔧 Complete script documentation
+
+## Architecture & Diagrams
+Visual documentation of system architecture and workflows:
+- [📋 Diagram Hub](diagrams/README.md) – Central index of all diagrams
+- [🏗️ System Architecture](diagrams/architecture.md) – Complete C4 component diagram
+- [🔄 Data Flow Sequences](diagrams/data-flow.md) – Upload, analysis, SSE streaming, PII redaction
+- [🚀 Deployment Topology](diagrams/deployment.md) – WSL 2 + Docker infrastructure
+- [🔒 PII Redaction Pipeline](diagrams/pii-pipeline.md) – Multi-pass security flowchart
+- [🎫 ITSM Integration Flows](diagrams/itsm-integration.md) – ServiceNow & Jira workflows
 
 ## Deployment
 - [Deployment guide](deployment/deployment-guide.md)
@@ -24,7 +34,7 @@ Welcome to the consolidated documentation hub for the RCA Engine. Use the sectio
 
 ## Reference
 - [Platform features](reference/features.md)
-- [Architecture overview](reference/architecture.md)
+- [Architecture overview](reference/architecture.md) – Text-based architecture guide
 - [Authentication guide](reference/authentication.md)
 - [🔒 PII Protection & Security Guide](PII_PROTECTION_GUIDE.md) ⭐ **CRITICAL**
 - [ITSM overview](reference/itsm-overview.md)
@@ -32,6 +42,8 @@ Welcome to the consolidated documentation hub for the RCA Engine. Use the sectio
 - [Product requirements (PRD)](reference/prd.md)
 - [Platform detection guide](reference/platform-detection.md) ⭐ NEW
 - ITSM playbooks: [Integration guide](ITSM_INTEGRATION_GUIDE.md), [Quickstart](ITSM_QUICKSTART.md), [Runbook](ITSM_RUNBOOK.md)
+
+> **Note**: For visual architecture diagrams, see [Architecture & Diagrams](#architecture--diagrams) section above.
 
 ## Reports & Validation
 - [Unified Ingestion Validation](reports/unified-ingestion-validation.md) ⭐ NEW
@@ -46,4 +58,12 @@ Welcome to the consolidated documentation hub for the RCA Engine. Use the sectio
 - [Visual Regression Testing Guide](testing/visual-regression-testing.md) 🧪 NEW - Chromatic/Percy framework
 - Manual helpers: [`Feature showcase setup`](FEATURES_SHOWCASE_SETUP.md), [`Manual API tests`](../tools/manual-tests/README.md)
 
-Historical notes, implementation diaries, and one-off fix documents now live under [`docs/archive/`](archive/README.md).
+---
+
+## Historical Archive
+
+Historical notes, implementation diaries, troubleshooting fixes, and completion reports have been moved to the archive for reference:
+- [📚 Historical Notes Index](archive/HISTORICAL_NOTES.md) – Categorized archive of 70+ legacy documents
+- [Archive README](archive/README.md) – Archive overview
+
+**Note**: Archive documents are for historical context only. Refer to the main documentation sections above for current, authoritative guides.

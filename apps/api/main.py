@@ -4,6 +4,7 @@ RCA Engine - Unified API Application
 Main FastAPI application entry point for the unified RCA engine.
 """
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -35,6 +36,7 @@ from apps.api.routers import (
     tickets,
     watcher,
 )
+from apps.api.routes import demo_endpoints, health_endpoints, tenant_endpoints
 from apps.api.middleware import SecurityMiddleware, RateLimitMiddleware, RequestLoggingMiddleware
 
 # Setup logging
@@ -56,10 +58,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Setup security
     setup_security()
     
+    # Start cache cleanup task
+    from core.cache.response_cache import cache_cleanup_task
+    cleanup_task = asyncio.create_task(cache_cleanup_task(interval=300))
+    logger.info("Started cache cleanup task")
+    
     yield
     
     # Cleanup
     logger.info("Shutting down RCA Engine API...")
+    cleanup_task.cancel()
     await close_db()
     await job_event_bus.close()
     await watcher_event_bus.close()
@@ -109,6 +117,11 @@ app.include_router(conversation.router, prefix="/api/conversation", tags=["conve
 app.include_router(tickets.router, prefix="/api/tickets", tags=["tickets"])
 app.include_router(watcher.router, prefix="/api/watcher", tags=["watcher"])
 app.include_router(prompts.router, prefix="/api/v1/prompts", tags=["prompts"])
+
+# Include new feature endpoints
+app.include_router(demo_endpoints.router)  # Demo feedback, analytics, sharing
+app.include_router(health_endpoints.router)  # Enhanced health checks
+app.include_router(tenant_endpoints.router)  # Tenant management
 
 # Mount metrics endpoint
 metrics_app = make_asgi_app()
@@ -162,7 +175,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         reload=settings.DEBUG,
         log_level="info"
     )

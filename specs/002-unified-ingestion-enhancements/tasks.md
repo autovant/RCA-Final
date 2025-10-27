@@ -21,6 +21,7 @@ description: "Task list for unified ingestion intelligence enhancements"
 **Purpose**: Ensure local environments, feature flags, and telemetry scaffolding are ready for story development.
 
 - [x] T001 [P] [Setup] Verify feature flags `related_incidents`, `platform_detection`, `archive_expanded_formats` exist in `core/config.py` and environment templates; add defaults if missing.
+- [x] T001a [Setup] Add Grafana dashboard panel for feature flag adoption metrics in `deploy/ops/dashboards/telemetry/feature-flags.json` tracking flag state and usage rates.
 - [x] T002 [P] [Setup] Review `start-dev.ps1` / docker compose to confirm Postgres (pgvector) and Redis services provisioned; document any adjustments in `docs/operations/local-dev.md`.
 - [x] T003 [Setup] Update `docs/operations/feature-flags.md` with rollout notes for new flags and cross-workspace visibility auditing.
 
@@ -72,6 +73,7 @@ description: "Task list for unified ingestion intelligence enhancements"
 
 - [x] T018 [US2] Integrate fingerprint creation workflow in `core/jobs/processor.py` post-job completion with visibility scope logic.
 - [x] T019 [US2] Persist safeguard notes and statuses to `IncidentFingerprint` when fingerprints are degraded or missing in `core/jobs/fingerprint_service.py`.
+- [x] T019a [US2] Implement retry logic for fingerprint generation failures in `core/jobs/fingerprint_service.py` with exponential backoff (3 attempts, 2s/4s/8s delays) per Constitution I.
 - [x] T020 [US2] Emit job metadata updates and telemetry for fingerprint status in `apps/worker/events.py` or equivalent event publisher.
 - [x] T021 [P] [US2] Add FastAPI admin endpoint or job metadata surface in `apps/api/routes/jobs.py` exposing fingerprint status for debugging.
 - [x] T022 [P] [US2] Update unit/integration tests in `tests/test_job_processor.py` and `tests/integration/test_incident_search.py` to cover new fingerprint lifecycle.

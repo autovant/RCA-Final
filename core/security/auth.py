@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 # Password hashing context
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-# HTTP Bearer token scheme
-security = HTTPBearer()
+# HTTP Bearer token scheme - auto_error=False allows optional authentication in dev mode
+security = HTTPBearer(auto_error=False)
 
 
 class AuthService:
@@ -378,32 +378,50 @@ async def _get_or_create_dev_user(db: AsyncSession) -> User:
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db)
 ) -> User:
     """
     Dependency to get the current authenticated user.
     
+    In development mode (environment="development"), authentication is optional.
+    If no credentials are provided, a default dev user is created/returned.
+    
     Args:
-        credentials: HTTP Bearer credentials
+        credentials: HTTP Bearer credentials (optional in dev mode)
         db: Database session
         
     Returns:
-        User: Current authenticated user
+        User: Current authenticated user or dev user
         
     Raises:
-        HTTPException: If authentication fails
+        HTTPException: If authentication fails in non-dev environments
     """
+    environment = settings.ENVIRONMENT
+    
+    # In development mode, if no credentials provided, return dev user
+    if environment in ("development", "dev") and credentials is None:
+        logger.info("No credentials provided in dev mode - using dev user")
+        return await _get_or_create_dev_user(db)
+    
+    # If credentials are provided, validate them
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
     token = credentials.credentials
 
     dev_token = settings.security.DEV_BEARER_TOKEN
-    # Only allow dev token bypass in development or testing environments
-    environment = getattr(settings, "environment", None)
+    # Allow dev token bypass in development or testing environments
     if (
         dev_token
         and secrets.compare_digest(token, dev_token)
         and environment in ("development", "dev", "testing", "test")
     ):
+        logger.info("Using dev token - returning dev user")
         return await _get_or_create_dev_user(db)
     
     try:

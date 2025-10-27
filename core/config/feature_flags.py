@@ -27,6 +27,18 @@ COMPRESSED_INGESTION = FeatureFlagDefinition(
     default=False,
 )
 
+EMBEDDING_CACHE = FeatureFlagDefinition(
+    key="embedding_cache_enabled",
+    description="Enables embedding cache lookups and writes for eligible tenants.",
+    default=False,
+)
+
+EMBEDDING_CACHE_EVICTION = FeatureFlagDefinition(
+    key="embedding_cache_eviction_enabled",
+    description="Allows asynchronous eviction jobs to prune stale cache entries once hit rate thresholds are met.",
+    default=False,
+)
+
 
 class FeatureFlagSet:
     """Mutable collection of feature flags with default fallbacks."""
@@ -61,6 +73,8 @@ class FeatureFlagSet:
 ALL_FEATURE_FLAGS: tuple[FeatureFlagDefinition, ...] = (
     TELEMETRY_ENHANCED_METRICS,
     COMPRESSED_INGESTION,
+    EMBEDDING_CACHE,
+    EMBEDDING_CACHE_EVICTION,
 )
 
 
@@ -69,5 +83,7 @@ __all__ = [
     "FeatureFlagSet",
     "TELEMETRY_ENHANCED_METRICS",
     "COMPRESSED_INGESTION",
+    "EMBEDDING_CACHE",
+    "EMBEDDING_CACHE_EVICTION",
     "ALL_FEATURE_FLAGS",
 ]

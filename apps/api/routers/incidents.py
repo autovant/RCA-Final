@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -28,6 +29,12 @@ from core.security.audit import record_related_incident_views
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _is_related_incidents_enabled() -> bool:
+    """Check if related incidents feature is enabled."""
+    env_value = os.getenv("RELATED_INCIDENTS_ENABLED", "").lower()
+    return env_value in ("true", "1", "yes", "on")
 _search_service = FingerprintSearchService()
 
 
@@ -129,6 +136,13 @@ async def related_incidents(
     current_user=Depends(get_current_user),
 ) -> RelatedIncidentListResponse:
     """Retrieve related incidents for a completed RCA session."""
+    
+    # Feature flag guard
+    if not _is_related_incidents_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Related incidents feature is not enabled"
+        )
 
     query_args: Dict[str, Any] = {
         "session_id": session_id,
@@ -175,6 +189,13 @@ async def search_related_incidents(
     current_user=Depends(get_current_user),
 ) -> RelatedIncidentListResponse:
     """Search historical incidents similar to the provided query."""
+    
+    # Feature flag guard
+    if not _is_related_incidents_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Related incidents feature is not enabled"
+        )
 
     visibility = _visibility_from_scope(payload.scope)
     request_args: Dict[str, Any] = {

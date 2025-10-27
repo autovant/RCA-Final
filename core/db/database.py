@@ -207,6 +207,42 @@ class DatabaseManager:
             logger.error(f"Database health check failed: {e}")
             return False
     
+    def get_pool_stats(self) -> dict:
+        """
+        Get database connection pool statistics.
+        
+        Returns:
+            dict: Pool statistics including size, checked_in, checked_out, etc.
+        """
+        if not self._initialized or not self._engine:
+            return {
+                "status": "not_initialized",
+                "pool_size": 0,
+                "checked_in": 0,
+                "checked_out": 0,
+                "overflow": 0,
+                "total_connections": 0
+            }
+        
+        try:
+            pool = self._engine.pool
+            return {
+                "status": "healthy",
+                "pool_size": pool.size(),
+                "checked_in": pool.checkedin(),
+                "checked_out": pool.checkedout(),
+                "overflow": pool.overflow(),
+                "total_connections": pool.size() + pool.overflow(),
+                "max_overflow": self._engine.pool._max_overflow,
+                "timeout": self._engine.pool._timeout
+            }
+        except Exception as e:
+            logger.error(f"Failed to get pool stats: {e}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
     @property
     def is_initialized(self) -> bool:
         """Check if database manager is initialized."""

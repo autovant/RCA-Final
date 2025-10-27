@@ -9,7 +9,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, List, Mapping, Optional, Sequence, cast
+from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
 
 from sqlalchemy import (
     BigInteger,
@@ -21,11 +21,13 @@ from sqlalchemy import (
     LargeBinary,
     String,
     UniqueConstraint,
+    delete,
+    select,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import validates
-from sqlalchemy.sql import func, select
+from sqlalchemy.sql import func
 
 from core.db.models import Base
 from core.config import settings
@@ -228,6 +230,51 @@ class EmbeddingCacheService:
         self._session.add(entry)
         await self._session.flush()
         return entry
+
+    async def select_stale_entries(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        older_than: datetime,
+        limit: int,
+    ) -> List[Tuple[uuid.UUID, str]]:
+        """Fetch identifiers for cache entries eligible for eviction."""
+
+        batch_size = max(1, int(limit))
+        stmt = (
+            select(EmbeddingCacheEntry.id, EmbeddingCacheEntry.model)
+            .where(EmbeddingCacheEntry.tenant_id == tenant_id)
+            .where(EmbeddingCacheEntry.hit_count == 0)
+            .where(EmbeddingCacheEntry.created_at <= older_than)
+            .order_by(EmbeddingCacheEntry.created_at.asc())
+            .limit(batch_size)
+        )
+        result = await self._session.execute(stmt)
+        records = result.all()
+        resolved: List[Tuple[uuid.UUID, str]] = []
+        for entry_id, model in records:
+            resolved.append((cast(uuid.UUID, entry_id), cast(str, model or "unknown")))
+        return resolved
+
+    async def delete_entries(
+        self,
+        entry_ids: Iterable[uuid.UUID],
+    ) -> List[str]:
+        """Delete cache entries by identifier returning their model labels."""
+
+        identifiers = [uuid.UUID(str(item)) for item in entry_ids]
+        if not identifiers:
+            return []
+
+        stmt = (
+            delete(EmbeddingCacheEntry)
+            .where(EmbeddingCacheEntry.id.in_(identifiers))
+            .returning(EmbeddingCacheEntry.model)
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        models = [cast(str, row[0] or "unknown") for row in result.fetchall()]
+        return models
 
     @staticmethod
     def _validate_scrub_confirmation(

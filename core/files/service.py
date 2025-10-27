@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import os
 import re
 import time
 import uuid
@@ -26,6 +27,7 @@ from core.config import settings
 from core.config.feature_flags import COMPRESSED_INGESTION, TELEMETRY_ENHANCED_METRICS
 from core.db.models import File
 from core.files import extraction, validation
+from core.files.enhanced_archives import get_enhanced_extractor
 from core.files.telemetry import (
     PartialUploadTelemetry,
     PipelineStage,
@@ -43,9 +45,15 @@ _SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]")
 
 _PIPELINE_METRICS = PipelineMetricsCollector()
 
-_ARCHIVE_EXTENSIONS = {"gz", "zip"}
+_ARCHIVE_EXTENSIONS = {"gz", "zip", "tar", "7z", "rar", "bz2", "xz", "tgz"}
 _INGEST_SLA_SECONDS = 4 * 60  # four-minute SLA
 _INGEST_SLA_ABORT_THRESHOLD = _INGEST_SLA_SECONDS - 30  # abort 30 seconds early
+
+
+def _is_archive_expanded_formats_enabled() -> bool:
+    """Check if expanded archive formats feature is enabled."""
+    env_value = os.getenv("ARCHIVE_EXPANDED_FORMATS_ENABLED", "").lower()
+    return env_value in ("true", "1", "yes", "on")
 
 
 def _append_warning(metadata: Dict[str, Any], warning: str) -> None:
@@ -212,42 +220,114 @@ class FileService:
             if is_archive:
                 archive_path = target_path
                 extraction_destination = self._build_extraction_destination(archive_path)
-                extractor = extraction.ArchiveExtractor()
-                try:
-                    extraction_result = await asyncio.to_thread(
-                        extractor.extract,
-                        archive_path,
-                        destination=extraction_destination,
-                    )
-                except extraction.ArchiveExtractionError as err:
-                    violation = validation.map_extraction_error(err)
-                    telemetry_metadata.setdefault("error_reason", violation.code)
-                    telemetry_metadata["extraction_detail"] = violation.detail or violation.message
-                    telemetry_metadata["extraction_exception"] = err.__class__.__name__
-                    telemetry_metadata["extraction_message"] = str(err) or violation.message
-                    retriable = not isinstance(
-                        err,
-                        (
-                            extraction.ExtractionTimeoutExceeded,
-                            extraction.ExtractionSizeLimitExceeded,
-                            extraction.UnsupportedArchiveTypeError,
-                        ),
-                    )
-                    telemetry_metadata["extraction_retriable"] = retriable
-                    if archive_path:
-                        await self._delete_path(archive_path)
-                    if retriable:
-                        raise HTTPException(
-                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=(
-                                "Archive could not be processed. The upload may be corrupted; "
-                                "please retry."
+                
+                # Use enhanced extractor if feature flag is enabled
+                if _is_archive_expanded_formats_enabled():
+                    try:
+                        enhanced_extractor = get_enhanced_extractor()
+                        extraction_info = await enhanced_extractor.extract(
+                            archive_path,
+                            extraction_destination,
+                        )
+                        # Convert enhanced result to standard format
+                        extraction_result = extraction.ExtractionResult(
+                            destination=extraction_destination,
+                            files=[
+                                extraction.ExtractedFile(
+                                    path=extraction_destination / file_name,
+                                    original_path=file_name,
+                                    size_bytes=0,  # Size will be determined by file validator
+                                )
+                                for file_name in extraction_info.files
+                            ],
+                            total_size_bytes=extraction_info.compressed_size,
+                            duration_seconds=0.0,  # Duration tracked separately in telemetry
+                            warnings=[],
+                        )
+                        telemetry_metadata["archive_format"] = extraction_info.format
+                        telemetry_metadata["enhanced_extraction"] = True
+                    except Exception as err:
+                        # Fall back to standard extractor
+                        logger.info(
+                            "Enhanced extractor failed for %s, falling back to standard: %s",
+                            archive_path.name,
+                            str(err),
+                        )
+                        telemetry_metadata["enhanced_extraction_fallback"] = True
+                        extractor = extraction.ArchiveExtractor()
+                        try:
+                            extraction_result = await asyncio.to_thread(
+                                extractor.extract,
+                                archive_path,
+                                destination=extraction_destination,
+                            )
+                        except extraction.ArchiveExtractionError as fallback_err:
+                            violation = validation.map_extraction_error(fallback_err)
+                            telemetry_metadata.setdefault("error_reason", violation.code)
+                            telemetry_metadata["extraction_detail"] = violation.detail or violation.message
+                            telemetry_metadata["extraction_exception"] = fallback_err.__class__.__name__
+                            telemetry_metadata["extraction_message"] = str(fallback_err) or violation.message
+                            retriable = not isinstance(
+                                fallback_err,
+                                (
+                                    extraction.ExtractionTimeoutExceeded,
+                                    extraction.ExtractionSizeLimitExceeded,
+                                    extraction.UnsupportedArchiveTypeError,
+                                ),
+                            )
+                            telemetry_metadata["extraction_retriable"] = retriable
+                            if archive_path:
+                                await self._delete_path(archive_path)
+                            if retriable:
+                                raise HTTPException(
+                                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    detail=(
+                                        "Archive could not be processed. The upload may be corrupted; "
+                                        "please retry."
+                                    ),
+                                ) from fallback_err
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=violation.message,
+                            ) from fallback_err
+                else:
+                    # Standard extraction flow
+                    extractor = extraction.ArchiveExtractor()
+                    try:
+                        extraction_result = await asyncio.to_thread(
+                            extractor.extract,
+                            archive_path,
+                            destination=extraction_destination,
+                        )
+                    except extraction.ArchiveExtractionError as err:
+                        violation = validation.map_extraction_error(err)
+                        telemetry_metadata.setdefault("error_reason", violation.code)
+                        telemetry_metadata["extraction_detail"] = violation.detail or violation.message
+                        telemetry_metadata["extraction_exception"] = err.__class__.__name__
+                        telemetry_metadata["extraction_message"] = str(err) or violation.message
+                        retriable = not isinstance(
+                            err,
+                            (
+                                extraction.ExtractionTimeoutExceeded,
+                                extraction.ExtractionSizeLimitExceeded,
+                                extraction.UnsupportedArchiveTypeError,
                             ),
+                        )
+                        telemetry_metadata["extraction_retriable"] = retriable
+                        if archive_path:
+                            await self._delete_path(archive_path)
+                        if retriable:
+                            raise HTTPException(
+                                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail=(
+                                    "Archive could not be processed. The upload may be corrupted; "
+                                    "please retry."
+                                ),
+                            ) from err
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=violation.message,
                         ) from err
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=violation.message,
-                    ) from err
 
                 violations = validation.validate_extraction_result(extraction_result)
                 if violations:
@@ -402,36 +482,7 @@ class FileService:
 
             await self._enforce_scan(target_path)
 
-            duplicate_id: Optional[str] = None
-            duplicate_job_id: Optional[str] = None
-            duplicate_result = await session.execute(
-                select(File)
-                .where(File.checksum == checksum)
-                .order_by(File.created_at.asc())
-            )
-            # Use a consistent approach for extracting the result from SQLAlchemy.
-            duplicate: Optional[File] = duplicate_result.scalars().first()
-            if duplicate:
-                duplicate_id = str(getattr(duplicate, "id", "")) or None
-                raw_job_id = getattr(duplicate, "job_id", None)
-                duplicate_job_id = str(raw_job_id) if raw_job_id else None
-                if duplicate_id:
-                    telemetry_metadata["duplicate_of"] = duplicate_id
-                if duplicate_job_id:
-                    telemetry_metadata["duplicate_of_job"] = duplicate_job_id
-                _append_warning(telemetry_metadata, "duplicate_upload_detected")
-                telemetry_metadata.setdefault("error_reason", "duplicate_upload")
-                if extraction_result:
-                    extraction_result.cleanup()
-                if archive_path:
-                    await self._delete_path(archive_path)
-                if target_path:
-                    await self._delete_path(target_path)
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Duplicate upload detected",
-                )
-
+            # Duplicate uploads are now allowed - each upload creates a new job
             file_metadata: Dict[str, Optional[str]] = {
                 "uploader": uploader,
             }
@@ -439,10 +490,6 @@ class FileService:
                 file_metadata["source_archive"] = archive_path.name
             if selected_member:
                 file_metadata["source_archive_member"] = selected_member.original_path
-            if duplicate_id:
-                file_metadata["duplicate_of"] = duplicate_id
-            if duplicate_job_id:
-                file_metadata["duplicate_of_job"] = duplicate_job_id
 
             file_record = File(
                 job_id=job_id,

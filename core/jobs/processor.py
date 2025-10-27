@@ -8,10 +8,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import os
 import re
 import time
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.worker.tasks.cache_eviction import EmbeddingCacheEvictionCoordinator
 from core.cache.embedding_cache_service import EmbeddingCacheService
 from core.config import settings
 from core.config.feature_flags import TELEMETRY_ENHANCED_METRICS
@@ -37,10 +39,17 @@ from core.files.telemetry import (
     persist_upload_telemetry_event,
     sanitise_metadata,
 )
+from core.jobs.fingerprint_service import (
+    FingerprintNotFoundError,
+    FingerprintSearchService,
+    FingerprintUnavailableError,
+)
 from core.jobs.models import (
     FingerprintStatus,
     IncidentFingerprintDTO,
     PlatformDetectionOutcome,
+    RelatedIncidentQuery,
+    RelatedIncidentSearchResult,
     VisibilityScope,
 )
 from core.jobs.service import JobService
@@ -56,8 +65,13 @@ logger = get_logger(__name__)
 
 
 _PIPELINE_METRICS = PipelineMetricsCollector()
+_CACHE_EVICTION_COORDINATOR = EmbeddingCacheEvictionCoordinator(
+    get_db_session(),
+    _PIPELINE_METRICS,
+)
 
 MAX_FINGERPRINT_SUMMARY_LENGTH = 4096
+RELATED_INCIDENT_DISPLAY_LIMIT = 5
 
 PROGRESS_STEP_LABELS: Dict[str, str] = {
     "classification": "Classifying uploaded files",
@@ -106,7 +120,6 @@ class PipelineContext:
     size_bytes: Optional[int]
 
 
-
 @dataclass
 class FileDescriptor:
     """Snapshot of a file record detached from the ORM session."""
@@ -144,6 +157,10 @@ class FileSummary:
     redaction_validation_warnings: List[str] = field(default_factory=list)
 
 
+class JobCancelledError(RuntimeError):
+    """Raised when a job is cancelled during asynchronous processing."""
+
+
 class JobProcessor:
     """Async handlers for background job types leveraging embeddings + LLMs."""
 
@@ -153,6 +170,7 @@ class JobProcessor:
         self._embedding_service: Optional[EmbeddingService] = None
         self._embedding_lock = asyncio.Lock()
         self._pii_redactor = PiiRedactor()
+        self._fingerprint_search_service = FingerprintSearchService()
 
     def _progress_label(self, step: str) -> str:
         return PROGRESS_STEP_LABELS.get(
@@ -220,6 +238,31 @@ class JobProcessor:
             payload,
             session=session,
         )
+
+    async def _ensure_job_active(self, job_id: str) -> None:
+        """Raise ``JobCancelledError`` when the job transitioned to a cancelled state."""
+
+        getter = getattr(self._job_service, "get_job_status", None)
+        if getter is None:
+            return
+
+        backoff_seconds = 0.5
+
+        while True:
+            status = await getter(job_id)
+            if not status:
+                return
+
+            normalized = status.strip().lower()
+            if normalized in {"cancelled", "canceled"}:
+                raise JobCancelledError(f"Job {job_id} cancelled during processing")
+
+            if normalized == "paused":
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds = min(backoff_seconds * 1.5, 5.0)
+                continue
+
+            return
 
     def _build_stage_message(
         self,
@@ -410,22 +453,25 @@ class JobProcessor:
 
     async def process_rca_analysis(self, job: Job) -> Dict[str, Any]:
         """Run the full RCA pipeline for the supplied job."""
+        job_id = str(job.id)
+
         # Step 1: Initial classification and setup
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "classification",
             "started",
             message="Classifying uploaded files and preparing analysis pipeline...",
             details={"progress": 0, "step": 1, "total_steps": 7},
         )
-        
+
+        await self._ensure_job_active(job_id)
         await self._job_service.create_job_event(
-            str(job.id),
+            job_id,
             "analysis-phase",
             {"phase": "ingestion", "status": "started"},
         )
 
-        files = await self._list_job_files(str(job.id))
+        files = await self._list_job_files(job_id)
         if not files:
             raise ValueError("No files uploaded for analysis")
 
@@ -435,7 +481,7 @@ class JobProcessor:
         total_chunks = 0
 
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "classification",
             "completed",
             message=f"Classified {len(files)} file{'s' if len(files) != 1 else ''} - proceeding with RCA analysis.",
@@ -449,6 +495,7 @@ class JobProcessor:
         )
 
         for index, descriptor in enumerate(files, start=1):
+            await self._ensure_job_active(job_id)
             summary = await self._process_single_file(
                 job,
                 descriptor,
@@ -459,10 +506,12 @@ class JobProcessor:
             file_summaries.append(summary)
             total_chunks += summary.chunk_count
 
+        await self._ensure_job_active(job_id)
         detection_outcome = await self._handle_platform_detection(job, detection_inputs)
 
+        await self._ensure_job_active(job_id)
         await self._job_service.create_job_event(
-            str(job.id),
+            job_id,
             "analysis-phase",
             {
                 "phase": "ingestion",
@@ -474,7 +523,7 @@ class JobProcessor:
 
         # Step 6: Correlate with historical incidents
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "correlation",
             "started",
             message="Searching for similar historical incidents and patterns...",
@@ -489,8 +538,9 @@ class JobProcessor:
         
         # Note: Actual correlation logic would go here
         # For now, we emit completion immediately
+        await self._ensure_job_active(job_id)
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "correlation",
             "completed",
             message=f"Correlation complete - analyzed patterns across {total_chunks} data chunks.",
@@ -507,7 +557,7 @@ class JobProcessor:
 
         # Step 7: LLM-powered root cause analysis
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "llm",
             "started",
             message="Running sanitized AI-powered root cause analysis using GitHub Copilot...",
@@ -522,23 +572,26 @@ class JobProcessor:
             },
         )
         
+        await self._ensure_job_active(job_id)
         await self._job_service.create_job_event(
-            str(job.id),
+            job_id,
             "analysis-phase",
             {"phase": "llm", "status": "started"},
         )
+        await self._ensure_job_active(job_id)
         llm_output = await self._run_llm_analysis(job, file_summaries, "rca_analysis")
         llm_blocked = bool(llm_output.get("blocked"))
         llm_prompt_details = cast(Dict[str, Any], llm_output.get("pii_prompt") or {})
+        await self._ensure_job_active(job_id)
         await self._job_service.create_job_event(
-            str(job.id),
+            job_id,
             "analysis-phase",
             {"phase": "llm", "status": "blocked" if llm_blocked else "completed"},
         )
 
         if llm_blocked:
             await self._emit_progress_event(
-                str(job.id),
+                job_id,
                 "llm",
                 "failed",
                 message="AI analysis blocked to uphold PII safeguards.",
@@ -553,7 +606,7 @@ class JobProcessor:
             )
         else:
             await self._emit_progress_event(
-                str(job.id),
+                job_id,
                 "llm",
                 "completed",
                 message="AI analysis complete - sanitized insights ready for review.",
@@ -585,9 +638,34 @@ class JobProcessor:
             "pii_validation_events": pii_validation_events,
         }
 
+        fingerprint_metadata: Optional[IncidentFingerprintDTO] = None
+        related_incidents_payload: Optional[Dict[str, Any]] = None
+        try:
+            await self._ensure_job_active(job_id)
+            fingerprint_metadata = await self._index_incident_fingerprint(
+                job,
+                file_summaries,
+                llm_output,
+            )
+        except Exception:  # pragma: no cover - fingerprint indexing must not block job completion
+            logger.exception("Incident fingerprint indexing failed for job %s", job.id)
+
+        if fingerprint_metadata and fingerprint_metadata.fingerprint_status is FingerprintStatus.AVAILABLE:
+            try:
+                related_search = await self._fetch_related_incidents_for_report(
+                    job,
+                    fingerprint_metadata,
+                    detection_outcome,
+                )
+            except Exception:  # pragma: no cover - discovery should not block job completion
+                logger.exception("Related incident enrichment failed for job %s", job.id)
+            else:
+                if related_search is not None:
+                    related_incidents_payload = related_search.model_dump(mode="json")
+
         # Step 8: Generating final report
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "report",
             "started",
             message="Compiling comprehensive RCA report with sanitized findings and recommendations...",
@@ -605,16 +683,19 @@ class JobProcessor:
         )
 
         try:
+            await self._ensure_job_active(job_id)
             outputs = self._render_outputs(
                 job,
                 aggregate_metrics,
                 file_summaries,
                 llm_output,
                 mode="rca_analysis",
+                fingerprint=fingerprint_metadata.model_dump(mode="json") if fingerprint_metadata else None,
+                related_incidents=related_incidents_payload,
             )
         except Exception:
             await self._emit_progress_event(
-                str(job.id),
+                job_id,
                 "report",
                 "failed",
                 message="Failed to compile final RCA report.",
@@ -626,7 +707,7 @@ class JobProcessor:
             raise
 
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "report",
             "completed",
             message=f"RCA report generated successfully! Analyzed {aggregate_metrics['lines']} lines across {len(file_summaries)} file(s).",
@@ -662,8 +743,9 @@ class JobProcessor:
         else:
             completion_message = "✓ Analysis complete! No sensitive data detected during processing."
 
+        await self._ensure_job_active(job_id)
         await self._emit_progress_event(
-            str(job.id),
+            job_id,
             "completed",
             "success",
             message=completion_message,
@@ -679,19 +761,8 @@ class JobProcessor:
                 "pii_validation_events": aggregate_metrics["pii_validation_events"],
             },
         )
-
-        fingerprint_metadata: Optional[IncidentFingerprintDTO] = None
-        try:
-            fingerprint_metadata = await self._index_incident_fingerprint(
-                job,
-                file_summaries,
-                llm_output,
-            )
-        except Exception:  # pragma: no cover - fingerprint indexing must not block job completion
-            logger.exception("Incident fingerprint indexing failed for job %s", job.id)
-
         return {
-            "job_id": str(job.id),
+            "job_id": job_id,
             "analysis_type": "rca_analysis",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "metrics": aggregate_metrics,
@@ -699,8 +770,78 @@ class JobProcessor:
             "llm": llm_output,
             "outputs": outputs,
             "fingerprint": fingerprint_metadata.model_dump(mode="json") if fingerprint_metadata else None,
+            "related_incidents": related_incidents_payload,
             "platform_detection": detection_outcome.model_dump(mode="json") if detection_outcome else None,
         }
+
+    def _is_related_incidents_enabled(self) -> bool:
+        # Check Settings attribute first
+        is_enabled = bool(getattr(settings, "RELATED_INCIDENTS_ENABLED", False))
+        
+        # Check feature_flags object if available
+        feature_flags = getattr(settings, "feature_flags", None)
+
+        if feature_flags is not None and hasattr(feature_flags, "is_enabled"):
+            try:
+                if feature_flags.is_enabled("related_incidents_enabled"):
+                    return True
+            except Exception:  # pragma: no cover - defensive guard
+                logger.debug(
+                    "Feature flag check failed for RELATED_INCIDENTS_ENABLED",
+                    exc_info=True,
+                )
+
+        if feature_flags is not None:
+            try:
+                is_enabled = is_enabled or bool(
+                    getattr(feature_flags, "RELATED_INCIDENTS_ENABLED", False)
+                )
+            except Exception:  # pragma: no cover - defensive guard
+                logger.debug(
+                    "Feature flag attribute fallback failed for RELATED_INCIDENTS_ENABLED",
+                    exc_info=True,
+                )
+
+        # Final fallback: check environment variable directly
+        if not is_enabled:
+            env_value = os.getenv("RELATED_INCIDENTS_ENABLED", "").lower()
+            is_enabled = env_value in ("true", "1", "yes", "on")
+        return is_enabled
+
+    def _is_platform_detection_enabled(self) -> bool:
+        """Check if platform detection feature is enabled."""
+        # Check Settings attribute first
+        is_enabled = bool(getattr(settings, "PLATFORM_DETECTION_ENABLED", False))
+        
+        # Check feature_flags object if available
+        feature_flags = getattr(settings, "feature_flags", None)
+
+        if feature_flags is not None and hasattr(feature_flags, "is_enabled"):
+            try:
+                if feature_flags.is_enabled("platform_detection_enabled"):
+                    return True
+            except Exception:  # pragma: no cover - defensive guard
+                logger.debug(
+                    "Feature flag check failed for PLATFORM_DETECTION_ENABLED",
+                    exc_info=True,
+                )
+
+        if feature_flags is not None:
+            try:
+                is_enabled = is_enabled or bool(
+                    getattr(feature_flags, "PLATFORM_DETECTION_ENABLED", False)
+                )
+            except Exception:  # pragma: no cover - defensive guard
+                logger.debug(
+                    "Feature flag attribute fallback failed for PLATFORM_DETECTION_ENABLED",
+                    exc_info=True,
+                )
+
+        # Final fallback: check environment variable directly
+        if not is_enabled:
+            env_value = os.getenv("PLATFORM_DETECTION_ENABLED", "").lower()
+            is_enabled = env_value in ("true", "1", "yes", "on")
+        return is_enabled
 
     async def _index_incident_fingerprint(
         self,
@@ -708,24 +849,7 @@ class JobProcessor:
         summaries: Sequence[FileSummary],
         llm_output: Dict[str, Any],
     ) -> Optional[IncidentFingerprintDTO]:
-        is_enabled = bool(getattr(settings, "RELATED_INCIDENTS_ENABLED", False))
-
-        feature_flags = getattr(settings, "feature_flags", None)
-        if feature_flags is not None and hasattr(feature_flags, "is_enabled"):
-            try:
-                if feature_flags.is_enabled("related_incidents_enabled"):
-                    is_enabled = True
-            except Exception:  # pragma: no cover - defensive guard
-                logger.debug(
-                    "Feature flag check failed for RELATED_INCIDENTS_ENABLED",
-                    exc_info=True,
-                )
-        elif feature_flags is not None:
-            is_enabled = is_enabled or bool(
-                getattr(feature_flags, "RELATED_INCIDENTS_ENABLED", False)
-            )
-
-        if not is_enabled:
+        if not self._is_related_incidents_enabled():
             return None
 
         manifest = job.input_manifest if isinstance(job.input_manifest, dict) else {}
@@ -747,15 +871,40 @@ class JobProcessor:
         fingerprint_status = FingerprintStatus.MISSING
 
         if summary_text:
-            try:
-                embedding_service = await self._ensure_embedding_service()
-                embedding_vector = await embedding_service.embed_text(summary_text)
-            except Exception:
+            # Retry logic per Constitution I: 3 attempts with exponential backoff (2s, 4s, 8s)
+            max_attempts = 3
+            backoff_delays = [2.0, 4.0, 8.0]
+            last_exception: Optional[Exception] = None
+            
+            for attempt in range(max_attempts):
+                try:
+                    embedding_service = await self._ensure_embedding_service()
+                    embedding_vector = await embedding_service.embed_text(summary_text)
+                    last_exception = None
+                    break  # Success - exit retry loop
+                except Exception as exc:
+                    last_exception = exc
+                    if attempt < max_attempts - 1:
+                        delay = backoff_delays[attempt]
+                        logger.warning(
+                            "Fingerprint embedding generation failed for job %s (attempt %d/%d), "
+                            "retrying in %.1fs: %s",
+                            job.id,
+                            attempt + 1,
+                            max_attempts,
+                            delay,
+                            str(exc),
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.exception(
+                            "Failed to generate fingerprint embedding for job %s after %d attempts",
+                            job.id,
+                            max_attempts,
+                        )
+            
+            if last_exception is not None:
                 fingerprint_status = FingerprintStatus.DEGRADED
-                logger.exception(
-                    "Failed to generate fingerprint embedding for job %s",
-                    job.id,
-                )
             else:
                 fingerprint_status = (
                     FingerprintStatus.AVAILABLE
@@ -820,6 +969,59 @@ class JobProcessor:
         )
 
         return dto
+
+    async def _fetch_related_incidents_for_report(
+        self,
+        job: Job,
+        fingerprint: IncidentFingerprintDTO,
+        detection_outcome: Optional[PlatformDetectionOutcome],
+    ) -> Optional[RelatedIncidentSearchResult]:
+        if not self._is_related_incidents_enabled():
+            return None
+
+        manifest_obj = getattr(job, "input_manifest", {})
+        manifest = manifest_obj if isinstance(manifest_obj, Mapping) else {}
+
+        min_relevance = max(0.0, min(1.0, float(fingerprint.relevance_threshold)))
+        limit = self._resolve_related_incident_limit(manifest)
+
+        detected_platform: Optional[str] = None
+        if detection_outcome is not None:
+            detected_platform = detection_outcome.detected_platform
+        elif hasattr(job, "platform_detection") and getattr(job, "platform_detection"):
+            detected_platform = getattr(job.platform_detection, "detected_platform", None)
+
+        platform_filter: Optional[str] = None
+        if detected_platform:
+            platform_value = str(detected_platform).strip()
+            if platform_value and platform_value.lower() != "unknown":
+                platform_filter = platform_value
+
+        query = RelatedIncidentQuery(
+            session_id=str(job.id),
+            scope=fingerprint.visibility_scope,
+            min_relevance=min_relevance,
+            limit=limit,
+            platform_filter=platform_filter,
+        )
+
+        try:
+            result = await self._fingerprint_search_service.related_for_session(query)
+        except (FingerprintNotFoundError, FingerprintUnavailableError) as exc:
+            logger.debug(
+                "Related incident lookup skipped for job %s: %s",
+                job.id,
+                exc,
+            )
+            return None
+        except Exception:
+            logger.exception("Failed to fetch related incidents for job %s", job.id)
+            return None
+
+        if not result.results:
+            return None
+
+        return result
 
     def _resolve_fingerprint_summary(
         self,
@@ -898,12 +1100,27 @@ class JobProcessor:
 
         return max(0.0, min(1.0, value))
 
+    def _resolve_related_incident_limit(self, manifest: Mapping[str, Any]) -> int:
+        candidate = manifest.get("related_incidents_limit") if isinstance(manifest, Mapping) else None
+        default_limit = getattr(settings, "RELATED_INCIDENTS_MAX_RESULTS", 10)
+
+        try:
+            limit_value = int(candidate) if candidate is not None else int(default_limit)
+        except (TypeError, ValueError):  # pragma: no cover - defensive guard
+            limit_value = int(default_limit) if isinstance(default_limit, (int, float, str)) else 10
+
+        return max(1, min(limit_value, 50))
+
 
     async def _handle_platform_detection(
         self,
         job: Job,
         inputs: Sequence[DetectionInput],
     ) -> Optional[PlatformDetectionOutcome]:
+        # Check if platform detection is enabled
+        if not self._is_platform_detection_enabled():
+            return None
+        
         detector = PlatformDetectionOrchestrator()
         flag_source = getattr(settings, "feature_flags", None)
         feature_flags: Dict[str, bool]
@@ -1294,6 +1511,9 @@ class JobProcessor:
         summaries: Sequence[FileSummary],
         llm_output: Dict[str, Any],
         mode: str,
+        *,
+        fingerprint: Optional[Mapping[str, Any]] = None,
+        related_incidents: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         severity = self._determine_severity(metrics)
         categories = self._derive_categories(metrics, mode)
@@ -1301,16 +1521,56 @@ class JobProcessor:
         recommended_actions = self._extract_actions(llm_output.get("summary", "")) or [
             "Review the generated summary and log excerpts for next steps."
         ]
+        analysis_breakdown = self._parse_structured_analysis(llm_output.get("summary", ""))
+
+        related_context: Optional[Dict[str, Any]] = None
+        if related_incidents and isinstance(related_incidents, Mapping):
+            results = related_incidents.get("results") or []
+            if results:
+                display_matches, related_summary, related_patterns = self._prepare_related_incident_analysis(
+                    related_incidents
+                )
+                related_context = {
+                    "payload": related_incidents,
+                    "display_matches": display_matches,
+                    "summary": related_summary,
+                    "patterns": related_patterns,
+                }
+
         markdown = self._build_markdown(
-            job, mode, severity, metrics, summaries, recommended_actions, tags, llm_output
+            job,
+            mode,
+            severity,
+            metrics,
+            summaries,
+            recommended_actions,
+            tags,
+            llm_output,
+            analysis_breakdown,
+            fingerprint=fingerprint,
+            related_context=related_context,
         )
         html_output = self._build_html(
-            job, mode, severity, metrics, summaries, recommended_actions, tags, llm_output
+            job,
+            mode,
+            severity,
+            metrics,
+            summaries,
+            recommended_actions,
+            tags,
+            llm_output,
+            analysis_breakdown,
+            fingerprint=fingerprint,
+            related_context=related_context,
         )
 
-        # Enhanced structured JSON with richer metadata
-        structured_json = {
-            "job_id": str(job.id),
+        job_identifier = getattr(job, "id", getattr(job, "job_id", "unknown"))
+        ticketing_data = getattr(job, "ticketing", None) or {}
+        summary_text = llm_output.get("summary", "")
+        first_line = summary_text.split("\n")[0] if summary_text else "No summary available"
+
+        structured_json: Dict[str, Any] = {
+            "job_id": str(job_identifier),
             "analysis_type": mode,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "severity": severity,
@@ -1321,12 +1581,10 @@ class JobProcessor:
             "summary": llm_output.get("summary"),
             "llm": llm_output,
             "recommended_actions": recommended_actions,
-            "ticketing": getattr(job, "ticketing", None) or {},
+            "ticketing": ticketing_data,
+            "root_cause_analysis": analysis_breakdown,
         }
 
-        # Add executive summary section
-        summary_text = llm_output.get("summary", "")
-        first_line = summary_text.split('\n')[0] if summary_text else "No summary available"
         structured_json["executive_summary"] = {
             "severity_level": severity,
             "total_errors": metrics.get("errors", 0),
@@ -1336,16 +1594,21 @@ class JobProcessor:
             "one_line_summary": first_line,
         }
 
-        # Add timeline section
+        if analysis_breakdown.get("primary_root_cause"):
+            structured_json["executive_summary"]["primary_root_cause"] = analysis_breakdown["primary_root_cause"]
+
+        created_at = getattr(job, "created_at", None)
+        started_at = getattr(job, "started_at", None)
+        completed_at = getattr(job, "completed_at", None)
+        duration_seconds = getattr(job, "duration_seconds", None)
         structured_json["timeline"] = {
-            "created_at": job.created_at.isoformat() if job.created_at is not None else None,
-            "started_at": job.started_at.isoformat() if job.started_at is not None else None,
-            "completed_at": job.completed_at.isoformat() if job.completed_at is not None else None,
-            "duration_seconds": job.duration_seconds,
+            "created_at": created_at.isoformat() if created_at is not None else None,
+            "started_at": started_at.isoformat() if started_at is not None else None,
+            "completed_at": completed_at.isoformat() if completed_at is not None else None,
+            "duration_seconds": duration_seconds,
         }
 
-        # Add platform detection if available
-        if hasattr(job, 'platform_detection') and job.platform_detection:
+        if hasattr(job, "platform_detection") and job.platform_detection:
             pd = job.platform_detection
             structured_json["platform_detection"] = {
                 "detected_platform": pd.detected_platform,
@@ -1355,7 +1618,6 @@ class JobProcessor:
                 "insights": pd.insights,
             }
 
-        # Enhanced PII protection section
         structured_json["pii_protection"] = {
             "files_sanitised": metrics.get("pii_redacted_files", 0),
             "files_quarantined": metrics.get("pii_failsafe_files", 0),
@@ -1365,20 +1627,33 @@ class JobProcessor:
             "compliance": ["GDPR", "PCI DSS", "HIPAA", "SOC 2"],
         }
 
-        # Add action priorities
-        priority_actions = []
-        standard_actions = []
+        priority_actions: List[str] = []
+        standard_actions: List[str] = []
         for action in recommended_actions:
             action_lower = action.lower()
-            if any(word in action_lower for word in ['immediate', 'urgent', 'critical', 'now', 'asap']):
+            if any(keyword in action_lower for keyword in ["immediate", "urgent", "critical", "now", "asap"]):
                 priority_actions.append(action)
             else:
                 standard_actions.append(action)
-        
+
         structured_json["action_priorities"] = {
             "high_priority": priority_actions,
             "standard_priority": standard_actions,
         }
+
+        if fingerprint:
+            structured_json["fingerprint"] = fingerprint
+
+        if related_context:
+            structured_json["related_incidents"] = {
+                **related_context["payload"],
+                "summary": related_context["summary"],
+                "patterns": related_context["patterns"],
+                "display_subset": related_context["display_matches"],
+            }
+            structured_json["executive_summary"]["related_matches"] = related_context["summary"].get("count", 0)
+        else:
+            structured_json["related_incidents"] = None
 
         return {"markdown": markdown, "html": html_output, "json": structured_json}
 
@@ -1440,6 +1715,168 @@ class JobProcessor:
                 actions.append(stripped.lstrip("-* ").strip())
         return [action for action in actions if action]
 
+    @staticmethod
+    def _truncate_text(value: str, limit: int = 480) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[: limit - 3].rstrip()}..."
+
+    @staticmethod
+    def _clean_markdown_inline(value: str) -> str:
+        cleaned = re.sub(r"[`*_]+", "", value.strip())
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _extract_list_items(block: str) -> List[str]:
+        items: List[str] = []
+        for raw in block.splitlines():
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            stripped = re.sub(r"^(?:[-*•]\s+)", "", stripped)
+            stripped = re.sub(r"^\d+[.)-]*\s*", "", stripped)
+            cleaned = JobProcessor._clean_markdown_inline(stripped)
+            if cleaned:
+                items.append(cleaned)
+        return items
+
+    @staticmethod
+    def _parse_structured_analysis(summary_text: str) -> Dict[str, Any]:
+        if not summary_text:
+            return {
+                "primary_root_cause": None,
+                "contributing_factors": [],
+                "evidence": [],
+                "impact_assessment": [],
+            }
+
+        normalized = summary_text.replace("\r\n", "\n")
+        section_matches = list(
+            re.finditer(r"^(#{2,4})\s+(.+)$", normalized, re.MULTILINE)
+        )
+
+        sections: Dict[str, str] = {}
+
+        def _normalise_heading(label: str) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+
+        for index, match in enumerate(section_matches):
+            heading = match.group(2).strip()
+            start = match.end()
+            end = section_matches[index + 1].start() if index + 1 < len(section_matches) else len(normalized)
+            content = normalized[start:end].strip()
+            sections[_normalise_heading(heading)] = content
+
+        def _get_section(*aliases: str) -> Optional[str]:
+            for alias in aliases:
+                normalised = _normalise_heading(alias)
+                if normalised in sections and sections[normalised].strip():
+                    return sections[normalised].strip()
+            return None
+
+        primary_block = _get_section("primary root cause", "root cause analysis")
+        contributing_block = _get_section("contributing factors") or ""
+        evidence_block = _get_section("evidence", "supporting evidence") or ""
+        impact_block = _get_section("impact assessment", "impact") or ""
+
+        primary_root_lines: List[str] = []
+        if primary_block:
+            for line in primary_block.splitlines():
+                cleaned_line = JobProcessor._clean_markdown_inline(line)
+                if cleaned_line:
+                    primary_root_lines.append(cleaned_line)
+                if primary_root_lines:
+                    break
+
+        primary_root_cause = primary_root_lines[0] if primary_root_lines else None
+
+        return {
+            "primary_root_cause": primary_root_cause,
+            "contributing_factors": JobProcessor._extract_list_items(contributing_block),
+            "evidence": JobProcessor._extract_list_items(evidence_block),
+            "impact_assessment": JobProcessor._extract_list_items(impact_block),
+        }
+
+    def _prepare_related_incident_analysis(
+        self,
+        payload: Mapping[str, Any],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
+        raw_results = payload.get("results") if isinstance(payload, Mapping) else None
+        matches: List[Mapping[str, Any]] = []
+        if isinstance(raw_results, Sequence):
+            for item in raw_results:
+                if isinstance(item, Mapping):
+                    matches.append(item)
+
+        sorted_matches = sorted(
+            matches,
+            key=lambda match: float(match.get("relevance") or 0.0),
+            reverse=True,
+        )
+
+        display_subset: List[Dict[str, Any]] = []
+        for match in sorted_matches[:RELATED_INCIDENT_DISPLAY_LIMIT]:
+            summary_text = str(match.get("summary") or "").strip()
+            display_subset.append(
+                {
+                    "session_id": str(match.get("session_id", "")),
+                    "tenant_id": str(match.get("tenant_id", "")),
+                    "relevance": float(match.get("relevance") or 0.0),
+                    "summary": self._truncate_text(summary_text, limit=320) if summary_text else "",
+                    "detected_platform": str(match.get("detected_platform") or "unknown"),
+                    "fingerprint_status": str(match.get("fingerprint_status") or ""),
+                    "occurred_at": match.get("occurred_at"),
+                    "safeguards": list(match.get("safeguards") or []),
+                }
+            )
+
+        source_workspace = str(payload.get("source_workspace_id")) if payload.get("source_workspace_id") else None
+        cross_workspace = 0
+        workspace_counter: Counter[str] = Counter()
+        platform_counter: Counter[str] = Counter()
+        safeguard_counter: Counter[str] = Counter()
+
+        for match in matches:
+            tenant_id = str(match.get("tenant_id") or "unknown")
+            workspace_counter[tenant_id] += 1
+
+            if source_workspace and tenant_id != source_workspace:
+                cross_workspace += 1
+
+            platform = str(match.get("detected_platform") or "unknown").lower()
+            platform_counter[platform] += 1
+
+            safeguards = match.get("safeguards")
+            if isinstance(safeguards, Sequence):
+                for label in safeguards:
+                    safeguard_counter[str(label)] += 1
+
+        summary = {
+            "count": len(matches),
+            "displayed": len(display_subset),
+            "highest_relevance": float(sorted_matches[0].get("relevance") or 0.0) if sorted_matches else 0.0,
+            "cross_workspace": cross_workspace,
+            "audit_token": payload.get("audit_token"),
+        }
+
+        patterns = {
+            "by_workspace": [
+                {"tenant_id": tenant, "count": count}
+                for tenant, count in workspace_counter.most_common(5)
+            ],
+            "by_platform": [
+                {"platform": platform, "count": count}
+                for platform, count in platform_counter.most_common(5)
+            ],
+            "safeguards": [
+                {"label": label, "count": count}
+                for label, count in safeguard_counter.most_common(5)
+            ],
+        }
+
+        return display_subset, summary, patterns
+
     def _build_markdown(
         self,
         job: Job,
@@ -1450,6 +1887,10 @@ class JobProcessor:
         recommended_actions: Sequence[str],
         tags: Sequence[str],
         llm_output: Dict[str, Any],
+        analysis_breakdown: Mapping[str, Any],
+        *,
+        fingerprint: Optional[Mapping[str, Any]] = None,
+        related_context: Optional[Mapping[str, Any]] = None,
     ) -> str:
         # Severity icon mapping
         severity_icons = {
@@ -1462,19 +1903,29 @@ class JobProcessor:
         
         # Calculate duration
         duration_str = "N/A"
-        if job.duration_seconds is not None:
-            if job.duration_seconds < 60:
-                duration_str = f"{job.duration_seconds:.1f} seconds"
+        job_duration = getattr(job, "duration_seconds", None)
+        if job_duration is not None:
+            if job_duration < 60:
+                duration_str = f"{job_duration:.1f} seconds"
             else:
-                duration_str = f"{job.duration_seconds / 60:.1f} minutes"
+                duration_str = f"{job_duration / 60:.1f} minutes"
         
         # Format timestamps
-        created_at_str = job.created_at.strftime("%B %d, %Y %H:%M:%S UTC") if job.created_at is not None else "N/A"
-        completed_at_str = job.completed_at.strftime("%B %d, %Y %H:%M:%S UTC") if job.completed_at is not None else "In Progress"
+        created_at = getattr(job, "created_at", None)
+        completed_at = getattr(job, "completed_at", None)
+        created_at_str = created_at.strftime("%B %d, %Y %H:%M:%S UTC") if created_at is not None else "N/A"
+        completed_at_str = (
+            completed_at.strftime("%B %d, %Y %H:%M:%S UTC")
+            if completed_at is not None
+            else "In Progress"
+        )
         
+        job_identifier = getattr(job, "id", "unknown")
+        job_user = getattr(job, "user_id", "unknown")
+
         lines: List[str] = [
             f"# {severity_icon} Root Cause Analysis Report",
-            f"## 🔍 Investigation #{job.id}",
+            f"## 🔍 Investigation #{job_identifier}",
             "",
             "---",
             "",
@@ -1485,7 +1936,7 @@ class JobProcessor:
             f"| 🕒 **Analysis Date** | {created_at_str} |",
             f"| ✅ **Completed At** | {completed_at_str} |",
             f"| ⏱️ **Duration** | {duration_str} |",
-            f"| 👤 **User ID** | {job.user_id} |",
+            f"| 👤 **User ID** | {job_user} |",
             f"| 🎯 **Job Type** | {mode.replace('_', ' ').title()} |",
             f"| {severity_icon} **Severity** | {severity.upper()} |",
             f"| 📊 **Files Analyzed** | {metrics.get('files', 0)} |",
@@ -1520,10 +1971,144 @@ class JobProcessor:
             "### One-Line Summary",
             first_line,
             "",
-            "---",
-            "",
         ])
         
+        breakdown = dict(analysis_breakdown or {})
+        primary_root_cause = breakdown.get("primary_root_cause")
+        contributing_factors = breakdown.get("contributing_factors") or []
+        evidence_items = breakdown.get("evidence") or []
+        impact_items = breakdown.get("impact_assessment") or []
+
+        if primary_root_cause or contributing_factors or evidence_items or impact_items:
+            lines.extend([
+                "---",
+                "",
+                "## 🎯 Root Cause Analysis",
+                "",
+            ])
+
+            if primary_root_cause:
+                lines.extend([
+                    "### Primary Root Cause",
+                    f"**{primary_root_cause}**",
+                    "",
+                ])
+
+            if contributing_factors:
+                lines.append("### Contributing Factors")
+                lines.append("")
+                for index, factor in enumerate(contributing_factors, start=1):
+                    lines.append(f"{index}. {factor}")
+                lines.append("")
+
+            if evidence_items:
+                lines.append("### Evidence")
+                lines.append("")
+                for item in evidence_items:
+                    lines.append(f"- {item}")
+                lines.append("")
+
+            if impact_items:
+                lines.append("### Impact Assessment")
+                lines.append("")
+                for item in impact_items:
+                    lines.append(f"- {item}")
+                lines.append("")
+
+        # Optional enrichment sections inserted before continuing
+        if fingerprint:
+            status_label = str(fingerprint.get("fingerprint_status") or "unknown").replace("_", " ").title()
+            scope_label = str(fingerprint.get("visibility_scope") or "unknown").replace("_", " ").title()
+            threshold_label = "Not configured"
+            threshold_value = fingerprint.get("relevance_threshold")
+            try:
+                threshold_float = float(threshold_value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                threshold_float = None
+            if threshold_float is not None:
+                threshold_label = f"{threshold_float:.2f}"
+            embedding_present = "Yes" if bool(fingerprint.get("embedding_present")) else "No"
+            summary_snippet = self._truncate_text(str(fingerprint.get("summary_text") or "").strip(), limit=400)
+
+            lines.extend([
+                "",
+                "### 🧬 Incident Fingerprint",
+                "",
+                f"- **Status:** {status_label}",
+                f"- **Visibility Scope:** {scope_label}",
+                f"- **Relevance Threshold:** {threshold_label}",
+                f"- **Embedding Stored:** {embedding_present}",
+            ])
+
+            if summary_snippet:
+                lines.extend([
+                    "",
+                    "#### Fingerprint Summary",
+                    summary_snippet,
+                ])
+
+            safeguard_notes = fingerprint.get("safeguard_notes")
+            if isinstance(safeguard_notes, Mapping) and safeguard_notes:
+                lines.extend(["", "#### Safeguard Notes"])
+                for key, value in sorted(safeguard_notes.items(), key=lambda item: str(item[0])):
+                    lines.append(f"- **{key}:** {value}")
+
+        if related_context:
+            summary_block = related_context.get("summary", {})
+            display_matches = related_context.get("display_matches", [])
+            pattern_block = related_context.get("patterns", {})
+
+            lines.extend([
+                "",
+                "## 🧩 Related Incident Signals",
+                "",
+                f"- **Matches Found:** {summary_block.get('count', 0)}",
+                f"- **Cross-Workspace Matches:** {summary_block.get('cross_workspace', 0)}",
+                f"- **Audit Token:** {summary_block.get('audit_token') or 'Not captured'}",
+            ])
+
+            highest_relevance = summary_block.get("highest_relevance")
+            if isinstance(highest_relevance, (int, float)) and highest_relevance > 0:
+                lines.append(f"- **Top Similarity:** {highest_relevance * 100:.1f}%")
+
+            if display_matches:
+                lines.extend(["", "### Highlighted Matches", ""])
+                for match in display_matches:
+                    session_id = match.get("session_id", "unknown")
+                    similarity = match.get("relevance", 0.0)
+                    match_summary = match.get("summary") or "No summary provided."
+                    platform = match.get("detected_platform", "unknown")
+                    lines.append(
+                        f"- `{session_id}` • {similarity * 100:.1f}% similarity • Platform: {platform}"
+                    )
+                    lines.append(f"  {match_summary}")
+                    safeguards = match.get("safeguards")
+                    if isinstance(safeguards, Sequence) and safeguards:
+                        lines.append(
+                            "  Safeguards: " + ", ".join(str(label) for label in safeguards[:5])
+                        )
+
+            workspace_patterns = pattern_block.get("by_workspace") or []
+            platform_patterns = pattern_block.get("by_platform") or []
+            safeguard_patterns = pattern_block.get("safeguards") or []
+
+            if workspace_patterns or platform_patterns or safeguard_patterns:
+                lines.extend(["", "### Pattern Snapshot", ""])
+                if workspace_patterns:
+                    lines.append("- **By Workspace:** " + ", ".join(
+                        f"{item['tenant_id']} ({item['count']})" for item in workspace_patterns
+                    ))
+                if platform_patterns:
+                    lines.append("- **By Platform:** " + ", ".join(
+                        f"{item['platform']} ({item['count']})" for item in platform_patterns
+                    ))
+                if safeguard_patterns:
+                    lines.append("- **Safeguards:** " + ", ".join(
+                        f"{item['label']} ({item['count']})" for item in safeguard_patterns
+                    ))
+
+        lines.extend(["", "---", ""])
+
         # Platform Detection Section (if available)
         if hasattr(job, 'platform_detection') and job.platform_detection:
             pd = job.platform_detection
@@ -1697,14 +2282,18 @@ class JobProcessor:
             ])
         
         # Footer
+        footer_job_id = getattr(job, "id", "unknown")
+        footer_provider = getattr(job, "provider", "unknown")
+        footer_model = getattr(job, "model", "unknown")
+
         lines.extend([
             "## 📝 Report Metadata",
             "",
             f"- **Report Generated:** {datetime.now(timezone.utc).strftime('%B %d, %Y %H:%M:%S UTC')}",
-            f"- **Job ID:** `{job.id}`",
+            f"- **Job ID:** `{footer_job_id}`",
             f"- **Platform:** RCA Insight Engine",
-            f"- **LLM Provider:** {job.provider}",
-            f"- **LLM Model:** {job.model}",
+            f"- **LLM Provider:** {footer_provider}",
+            f"- **LLM Model:** {footer_model}",
             "",
             "---",
             "",
@@ -1725,6 +2314,10 @@ class JobProcessor:
         recommended_actions: Sequence[str],
         tags: Sequence[str],
         llm_output: Dict[str, Any],
+        analysis_breakdown: Mapping[str, Any],
+        *,
+        fingerprint: Optional[Mapping[str, Any]] = None,
+        related_context: Optional[Mapping[str, Any]] = None,
     ) -> str:
         # Severity class mapping
         severity_class = f"severity-{severity.lower()}"
@@ -1732,15 +2325,27 @@ class JobProcessor:
         
         # Calculate duration
         duration_str = "N/A"
-        if job.duration_seconds is not None:
-            if job.duration_seconds < 60:
-                duration_str = f"{job.duration_seconds:.1f} seconds"
+        job_duration = getattr(job, "duration_seconds", None)
+        if job_duration is not None:
+            if job_duration < 60:
+                duration_str = f"{job_duration:.1f} seconds"
             else:
-                duration_str = f"{job.duration_seconds / 60:.1f} minutes"
+                duration_str = f"{job_duration / 60:.1f} minutes"
         
         # Format timestamps
-        created_at_str = job.created_at.strftime("%B %d, %Y %H:%M:%S UTC") if job.created_at is not None else "N/A"
-        completed_at_str = job.completed_at.strftime("%B %d, %Y %H:%M:%S UTC") if job.completed_at is not None else "In Progress"
+        created_at = getattr(job, "created_at", None)
+        completed_at = getattr(job, "completed_at", None)
+        created_at_str = created_at.strftime("%B %d, %Y %H:%M:%S UTC") if created_at is not None else "N/A"
+        completed_at_str = (
+            completed_at.strftime("%B %d, %Y %H:%M:%S UTC")
+            if completed_at is not None
+            else "In Progress"
+        )
+
+        job_identifier = getattr(job, "id", getattr(job, "job_id", "unknown"))
+        job_user_id = getattr(job, "user_id", getattr(job, "owner_id", "unknown"))
+        job_provider = getattr(job, "provider", "unknown")
+        job_model = getattr(job, "model", "unknown")
         
         # Build action items HTML
         priority_actions_html = []
@@ -1864,6 +2469,187 @@ class JobProcessor:
         tags_html = ""
         if tags:
             tags_html = ' · '.join(f"<code>{html.escape(tag)}</code>" for tag in tags)
+
+        breakdown = dict(analysis_breakdown or {})
+        primary_root_cause = breakdown.get("primary_root_cause")
+        contributing_factors = breakdown.get("contributing_factors") or []
+        evidence_items = breakdown.get("evidence") or []
+        impact_items = breakdown.get("impact_assessment") or []
+
+        root_cause_section = ""
+        if primary_root_cause or contributing_factors or evidence_items or impact_items:
+            primary_markup = (
+                f"<p><strong>Primary Root Cause:</strong> {html.escape(primary_root_cause)}</p>"
+                if primary_root_cause
+                else ""
+            )
+
+            factors_markup = ""
+            if contributing_factors:
+                items = "".join(
+                    f"<li>{html.escape(factor)}</li>" for factor in contributing_factors
+                )
+                factors_markup = f"<div class='root-cause-block'><h3>Contributing Factors</h3><ol>{items}</ol></div>"
+
+            evidence_markup = ""
+            if evidence_items:
+                items = "".join(
+                    f"<li>{html.escape(item)}</li>" for item in evidence_items
+                )
+                evidence_markup = f"<div class='root-cause-block'><h3>Evidence</h3><ul>{items}</ul></div>"
+
+            impact_markup = ""
+            if impact_items:
+                items = "".join(
+                    f"<li>{html.escape(item)}</li>" for item in impact_items
+                )
+                impact_markup = f"<div class='root-cause-block'><h3>Impact Assessment</h3><ul>{items}</ul></div>"
+
+            root_cause_section = (
+                "<section class='report-section'>"
+                "<h2 class='section-title'><span class='section-icon'>🎯</span> Root Cause Analysis</h2>"
+                f"{primary_markup}{factors_markup}{evidence_markup}{impact_markup}"
+                "</section>"
+            )
+
+        fingerprint_section = ""
+        if fingerprint:
+            status_label = html.escape(
+                str(fingerprint.get("fingerprint_status") or "unknown").replace("_", " ").title()
+            )
+            scope_label = html.escape(
+                str(fingerprint.get("visibility_scope") or "unknown").replace("_", " ").title()
+            )
+            threshold_label = "Not configured"
+            threshold_value = fingerprint.get("relevance_threshold")
+            try:
+                threshold_float = float(threshold_value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                threshold_float = None
+            if threshold_float is not None:
+                threshold_label = f"{threshold_float:.2f}"
+            threshold_label = html.escape(threshold_label)
+            embedding_label = "Yes" if bool(fingerprint.get("embedding_present")) else "No"
+            summary_excerpt = self._truncate_text(str(fingerprint.get("summary_text") or "").strip(), limit=600)
+
+            summary_html = ""
+            if summary_excerpt:
+                summary_html = (
+                    "<div class='fingerprint-summary'><h3>Fingerprint Summary</h3>"
+                    f"<p>{html.escape(summary_excerpt)}</p></div>"
+                )
+
+            safeguard_notes = fingerprint.get("safeguard_notes")
+            safeguards_html = ""
+            if isinstance(safeguard_notes, Mapping) and safeguard_notes:
+                items = "".join(
+                    f"<li><strong>{html.escape(str(key))}:</strong> {html.escape(str(value))}</li>"
+                    for key, value in sorted(safeguard_notes.items(), key=lambda item: str(item[0]))
+                )
+                safeguards_html = f"<div class='fingerprint-meta'><h3>Safeguard Notes</h3><ul>{items}</ul></div>"
+
+            fingerprint_section = f"""
+            <section class='report-section'>
+                <h2 class='section-title'><span class='section-icon'>🧬</span> Incident Fingerprint</h2>
+                <div class='fingerprint-card'>
+                    <p><strong>Status:</strong> {status_label}</p>
+                    <p><strong>Visibility Scope:</strong> {scope_label}</p>
+                    <p><strong>Relevance Threshold:</strong> {threshold_label}</p>
+                    <p><strong>Embedding Stored:</strong> {embedding_label}</p>
+                    {summary_html}
+                    {safeguards_html}
+                </div>
+            </section>
+            """
+
+        related_section = ""
+        if related_context:
+            summary_block = related_context.get("summary", {})
+            meta_items = [
+                f"<li><strong>Matches Found:</strong> {int(summary_block.get('count', 0))}</li>",
+                f"<li><strong>Cross-Workspace Matches:</strong> {int(summary_block.get('cross_workspace', 0))}</li>",
+            ]
+            audit_token = summary_block.get("audit_token")
+            meta_items.append(
+                f"<li><strong>Audit Token:</strong> {html.escape(str(audit_token))}</li>" if audit_token else "<li><strong>Audit Token:</strong> Not captured</li>"
+            )
+            highest_relevance = summary_block.get("highest_relevance")
+            if isinstance(highest_relevance, (int, float)) and highest_relevance > 0:
+                meta_items.append(f"<li><strong>Top Similarity:</strong> {highest_relevance * 100:.1f}%</li>")
+
+            display_matches = related_context.get("display_matches") or []
+            match_cards = []
+            for match in display_matches:
+                session_id = html.escape(str(match.get("session_id", "unknown")))
+                similarity = float(match.get("relevance") or 0.0) * 100
+                summary_text = html.escape(match.get("summary") or "No summary provided.")
+                platform = html.escape(str(match.get("detected_platform", "unknown")))
+                safeguards = match.get("safeguards")
+                safeguards_html = ""
+                if isinstance(safeguards, Sequence) and safeguards:
+                    labels = ", ".join(html.escape(str(label)) for label in safeguards[:5])
+                    safeguards_html = f"<p class='related-safeguards'><strong>Safeguards:</strong> {labels}</p>"
+
+                occurred_at = match.get("occurred_at")
+                occurred_html = (
+                    f"<p><strong>Occurred:</strong> {html.escape(str(occurred_at))}</p>"
+                    if occurred_at
+                    else ""
+                )
+
+                match_cards.append(
+                    f"""
+                    <div class='related-card'>
+                        <h3>Session {session_id}</h3>
+                        <p><strong>Similarity:</strong> {similarity:.1f}%</p>
+                        <p><strong>Platform:</strong> {platform}</p>
+                        {occurred_html}
+                        <p>{summary_text}</p>
+                        {safeguards_html}
+                    </div>
+                    """
+                )
+
+            pattern_block = related_context.get("patterns", {})
+            pattern_items = []
+            workspaces = pattern_block.get("by_workspace") or []
+            platforms = pattern_block.get("by_platform") or []
+            safeguards = pattern_block.get("safeguards") or []
+
+            if workspaces:
+                workspace_labels = ", ".join(
+                    f"{html.escape(str(item['tenant_id']))} ({int(item['count'])})"
+                    for item in workspaces
+                )
+                pattern_items.append(f"<li><strong>By Workspace:</strong> {workspace_labels}</li>")
+            if platforms:
+                platform_labels = ", ".join(
+                    f"{html.escape(str(item['platform']))} ({int(item['count'])})"
+                    for item in platforms
+                )
+                pattern_items.append(f"<li><strong>By Platform:</strong> {platform_labels}</li>")
+            if safeguards:
+                safeguard_labels = ", ".join(
+                    f"{html.escape(str(item['label']))} ({int(item['count'])})"
+                    for item in safeguards
+                )
+                pattern_items.append(f"<li><strong>Safeguards:</strong> {safeguard_labels}</li>")
+
+            patterns_html = (
+                f"<div class='related-patterns'><h3>Pattern Snapshot</h3><ul>{''.join(pattern_items)}</ul></div>"
+                if pattern_items
+                else ""
+            )
+
+            matches_html = ''.join(match_cards)
+            related_section = f"""
+            <section class='report-section'>
+                <h2 class='section-title'><span class='section-icon'>🧩</span> Related Incident Signals</h2>
+                <ul class='related-meta'>{''.join(meta_items)}</ul>
+                {matches_html or '<p>No related incidents surfaced.</p>'}
+                {patterns_html}
+            </section>
+            """
         
         # Full HTML with embedded CSS
         return f"""<!DOCTYPE html>
@@ -1871,7 +2657,7 @@ class JobProcessor:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RCA Report - Job {html.escape(str(job.id))}</title>
+    <title>RCA Report - Job {html.escape(str(job_identifier))}</title>
     <style>
         :root {{
             --fluent-blue-500: #0078d4;
@@ -2065,6 +2851,51 @@ class JobProcessor:
             color: var(--fluent-blue-400);
         }}
 
+        .fingerprint-card {{
+            background: var(--dark-bg-tertiary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }}
+
+        .fingerprint-summary h3 {{
+            margin-bottom: 0.5rem;
+            color: var(--fluent-blue-400);
+        }}
+
+        .fingerprint-meta ul {{
+            list-style: disc;
+            margin-left: 1.5rem;
+        }}
+
+        .related-card {{
+            background: var(--dark-bg-tertiary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border-left: 4px solid var(--fluent-blue-400);
+        }}
+
+        .related-card h3 {{
+            margin-top: 0;
+            margin-bottom: 0.5rem;
+        }}
+
+        .related-meta {{
+            list-style: none;
+            padding-left: 0;
+            margin: 0 0 1.5rem 0;
+        }}
+
+        .related-meta li {{
+            margin-bottom: 0.5rem;
+        }}
+
+        .related-patterns ul {{
+            list-style: disc;
+            margin-left: 1.5rem;
+        }}
+
         .file-keywords {{
             margin: 1rem 0;
             color: var(--dark-text-secondary);
@@ -2129,6 +2960,15 @@ class JobProcessor:
             margin-left: 1.5rem;
         }}
 
+        .root-cause-block {{
+            margin-top: 1.25rem;
+        }}
+
+        .root-cause-block ul,
+        .root-cause-block ol {{
+            margin-left: 1.5rem;
+        }}
+
         hr {{
             border: none;
             border-top: 1px solid var(--dark-border);
@@ -2160,7 +3000,7 @@ class JobProcessor:
 <body>
     <div class='report-header'>
         <h1 class='report-title'>{severity_emoji} Root Cause Analysis Report</h1>
-        <p class='report-subtitle'>🔍 Investigation #{html.escape(str(job.id))}</p>
+    <p class='report-subtitle'>🔍 Investigation #{html.escape(str(job_identifier))}</p>
     </div>
 
     <div class='severity-badge {severity_class}'>
@@ -2173,7 +3013,7 @@ class JobProcessor:
             <tr><th>Analysis Date</th><td>{created_at_str}</td></tr>
             <tr><th>Completed At</th><td>{completed_at_str}</td></tr>
             <tr><th>Duration</th><td>{duration_str}</td></tr>
-            <tr><th>User ID</th><td>{html.escape(str(job.user_id))}</td></tr>
+            <tr><th>User ID</th><td>{html.escape(str(job_user_id))}</td></tr>
             <tr><th>Job Type</th><td>{html.escape(mode.replace('_', ' ').title())}</td></tr>
             <tr><th>Severity</th><td>{severity.upper()}</td></tr>
             <tr><th>Files Analyzed</th><td>{metrics.get('files', 0)}</td></tr>
@@ -2196,7 +3036,10 @@ class JobProcessor:
         </div>
     </section>
 
+    {root_cause_section}
+    {fingerprint_section}
     {platform_section}
+    {related_section}
 
     <section class='report-section'>
         <h2 class='section-title'><span class='section-icon'>🎯</span> Detailed Analysis</h2>
@@ -2234,10 +3077,10 @@ class JobProcessor:
         <h2 class='section-title'><span class='section-icon'>📝</span> Report Metadata</h2>
         <ul>
             <li><strong>Report Generated:</strong> {datetime.now(timezone.utc).strftime('%B %d, %Y %H:%M:%S UTC')}</li>
-            <li><strong>Job ID:</strong> <code>{html.escape(str(job.id))}</code></li>
+            <li><strong>Job ID:</strong> <code>{html.escape(str(job_identifier))}</code></li>
             <li><strong>Platform:</strong> RCA Insight Engine</li>
-            <li><strong>LLM Provider:</strong> {html.escape(str(job.provider))}</li>
-            <li><strong>LLM Model:</strong> {html.escape(str(job.model))}</li>
+            <li><strong>LLM Provider:</strong> {html.escape(str(job_provider))}</li>
+            <li><strong>LLM Model:</strong> {html.escape(str(job_model))}</li>
         </ul>
         <hr>
         <p><strong>🔒 Confidentiality Notice:</strong> This report may contain sensitive information. Distribution should be limited to authorized personnel only.</p>
@@ -2454,7 +3297,14 @@ class JobProcessor:
             Optional[str], getattr(file_record, "content_type", None)
         )
 
-        collector(DetectionInput(str(detected_name), snippet, content_type, metadata))
+        detection_input = DetectionInput(
+            name=str(detected_name),
+            content=snippet,
+            content_type=content_type,
+            metadata=metadata,
+        )
+
+        collector(detection_input)
 
     @staticmethod
     def _truncate_detection_content(content: str, limit: int = 8000) -> str:
@@ -2569,11 +3419,14 @@ class JobProcessor:
         embed_status = PipelineStatus.SUCCESS
         embeddings: List[List[float]] = []
         try:
-            embeddings = await self._generate_embeddings(
-                chunks,
-                context=context,
-                pii_scrubbed=True,
-            )
+                embeddings = await self._generate_embeddings(
+                    chunks,
+                    context=context,
+                    pii_scrubbed=True,
+                    session=session,
+                    job_id=str(job.id),
+                    cache_details=dict(embedding_start_details),
+                )
         except Exception:
             embed_status = PipelineStatus.FAILED
             raise
@@ -3203,6 +4056,9 @@ class JobProcessor:
         *,
         context: Optional[PipelineContext] = None,
         pii_scrubbed: bool = True,
+        session: Optional[AsyncSession] = None,
+        job_id: Optional[str] = None,
+        cache_details: Optional[Mapping[str, Any]] = None,
     ) -> List[List[float]]:
         texts_list = list(texts)
         if not texts_list:
@@ -3234,67 +4090,146 @@ class JobProcessor:
         }
 
         assert tenant_uuid is not None  # guarded by cache_enabled check
+        cache_stage_started_at = datetime.now(timezone.utc)
+        cache_stage_timer_start = time.perf_counter()
+        cache_stage_status = PipelineStatus.SUCCESS
+        cache_error_detail: Optional[str] = None
+        cache_hit_indexes: List[int] = []
+        miss_entries: List[Tuple[int, str, str]] = []
+        store_count = 0
+        store_committed = False
+        lookup_count = len(texts_list)
+        cache_stage_seed = dict(cache_details or {})
+        cache_stage_seed.setdefault("chunk_count", lookup_count)
+        hit_rate = 0.0
 
-        async with self._session_factory() as session:
-            cache_service = EmbeddingCacheService(session, metrics=_PIPELINE_METRICS)
-            misses: List[Tuple[int, str, str]] = []
-            for index, text in enumerate(texts_list):
-                content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                hit = await cache_service.lookup(tenant_uuid, content_hash, model_key)
-                if hit is not None:
-                    embeddings[index] = hit.embedding
-                    continue
-                misses.append((index, text, content_hash))
+        try:
+            async with self._session_factory() as cache_session:
+                cache_service = EmbeddingCacheService(cache_session, metrics=_PIPELINE_METRICS)
 
-            if misses:
-                miss_texts = [text for (_, text, _) in misses]
-                miss_vectors = await self._embed_in_batches(service, miss_texts, batch_size)
-                if len(miss_vectors) != len(misses):
-                    raise RuntimeError(
-                        "Embedding provider returned mismatched batch size: "
-                        f"expected {len(misses)}, got {len(miss_vectors)}"
+                for index, text in enumerate(texts_list):
+                    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    hit = await cache_service.lookup(tenant_uuid, content_hash, model_key)
+                    if hit is not None:
+                        embeddings[index] = hit.embedding
+                        cache_hit_indexes.append(index)
+                        continue
+                    miss_entries.append((index, text, content_hash))
+
+                if miss_entries:
+                    miss_texts = [text for (_, text, _) in miss_entries]
+                    miss_vectors = await self._embed_in_batches(service, miss_texts, batch_size)
+                    if len(miss_vectors) != len(miss_entries):
+                        raise RuntimeError(
+                            "Embedding provider returned mismatched batch size: "
+                            f"expected {len(miss_entries)}, got {len(miss_vectors)}"
+                        )
+
+                    misses_with_vectors = list(zip(miss_entries, miss_vectors))
+                    for (idx, _text, _hash), vector in misses_with_vectors:
+                        embeddings[idx] = vector
+
+                    if scrub_confirmed:
+                        try:
+                            for (_idx, _text, content_hash), vector in misses_with_vectors:
+                                await cache_service.store(
+                                    tenant_uuid,
+                                    content_hash,
+                                    model_key,
+                                    embedding_vector_id=None,
+                                    scrub_metadata=scrub_metadata,
+                                    embedding=vector,
+                                )
+                            await cache_session.commit()
+                            store_count = len(misses_with_vectors)
+                            store_committed = True
+                        except IntegrityError:
+                            await cache_session.rollback()
+                            store_count = 0
+                            store_committed = False
+                            logger.debug(
+                                "Embedding cache entry already exists",
+                                extra={
+                                    "tenant_id": str(tenant_uuid),
+                                    "model": model_key,
+                                    "miss_count": len(misses_with_vectors),
+                                },
+                            )
+                        except Exception as exc:
+                            await cache_session.rollback()
+                            store_count = 0
+                            store_committed = False
+                            cache_stage_status = PipelineStatus.FAILED
+                            cache_error_detail = str(exc)
+                            logger.exception(
+                                "Failed to store embedding cache entry",
+                                extra={
+                                    "tenant_id": str(tenant_uuid),
+                                    "model": model_key,
+                                    "miss_count": len(misses_with_vectors),
+                                },
+                            )
+                    else:
+                        logger.debug(
+                            "Skipping embedding cache store due to missing scrub confirmation",
+                            extra={"tenant_id": str(tenant_uuid), "model": model_key},
+                        )
+        except Exception as exc:
+            cache_stage_status = PipelineStatus.FAILED
+            cache_error_detail = str(exc)
+            raise
+        finally:
+            if context and session and job_id:
+                cache_completed_at = datetime.now(timezone.utc)
+                duration_seconds = max(time.perf_counter() - cache_stage_timer_start, 0.0)
+                hit_count = len(cache_hit_indexes)
+                miss_count = len(miss_entries)
+                hit_rate = (hit_count / lookup_count) if lookup_count else 0.0
+
+                cache_stage_metadata: Dict[str, Any] = dict(cache_stage_seed)
+                cache_stage_metadata.update(
+                    {
+                        "lookup_count": lookup_count,
+                        "hit_count": hit_count,
+                        "miss_count": miss_count,
+                        "hit_rate": round(hit_rate, 4),
+                        "model": model_key,
+                        "pii_scrubbed": scrub_confirmed,
+                    }
+                )
+                if cache_hit_indexes:
+                    cache_stage_metadata["hit_indexes"] = cache_hit_indexes
+                if store_count > 0:
+                    cache_stage_metadata["store_count"] = store_count
+                cache_stage_metadata["store_committed"] = store_committed
+                if not scrub_confirmed:
+                    cache_stage_metadata["store_skipped_reason"] = "missing_scrub_confirmation"
+                if cache_stage_status is PipelineStatus.FAILED and cache_error_detail:
+                    cache_stage_metadata["error"] = cache_error_detail[:256]
+
+                try:
+                    await self._record_stage_event(
+                        session,
+                        job_id,
+                        context,
+                        stage=PipelineStage.CACHE,
+                        status=cache_stage_status,
+                        started_at=cache_stage_started_at,
+                        completed_at=cache_completed_at,
+                        duration_seconds=duration_seconds,
+                        metadata=cache_stage_metadata,
+                    )
+                except Exception:  # pragma: no cover - telemetry best effort
+                    logger.exception(
+                        "Failed to record embedding cache telemetry",
+                        extra={"job_id": job_id, "model": model_key},
                     )
 
-                misses_with_vectors = list(zip(misses, miss_vectors))
-                for (idx, _text, _hash), vector in misses_with_vectors:
-                    embeddings[idx] = vector
-
-                if scrub_confirmed:
-                    try:
-                        for (_idx, _text, content_hash), vector in misses_with_vectors:
-                            await cache_service.store(
-                                tenant_uuid,
-                                content_hash,
-                                model_key,
-                                embedding_vector_id=None,
-                                scrub_metadata=scrub_metadata,
-                                embedding=vector,
-                            )
-                        await session.commit()
-                    except IntegrityError:
-                        await session.rollback()
-                        logger.debug(
-                            "Embedding cache entry already exists",
-                            extra={
-                                "tenant_id": str(tenant_uuid),
-                                "model": model_key,
-                                "miss_count": len(misses_with_vectors),
-                            },
-                        )
-                    except Exception:
-                        await session.rollback()
-                        logger.exception(
-                            "Failed to store embedding cache entry",
-                            extra={
-                                "tenant_id": str(tenant_uuid),
-                                "model": model_key,
-                                "miss_count": len(misses_with_vectors),
-                            },
-                        )
-                else:
-                    logger.debug(
-                        "Skipping embedding cache store due to missing scrub confirmation",
-                        extra={"tenant_id": str(tenant_uuid), "model": model_key},
+                if tenant_uuid is not None and cache_stage_status is PipelineStatus.SUCCESS:
+                    await _CACHE_EVICTION_COORDINATOR.maybe_schedule(
+                        tenant_uuid,
+                        hit_rate=hit_rate,
+                        job_id=job_id,
                     )
 
         resolved: List[List[float]] = []

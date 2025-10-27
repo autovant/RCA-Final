@@ -3,6 +3,7 @@ Embedding service for RCA Engine.
 Provides text embedding generation and management.
 """
 
+import asyncio
 from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
 import hashlib
@@ -153,7 +154,9 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
             raise
     
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts."""
+        """Generate embeddings for multiple texts in batches for better performance."""
+        # For Ollama, we still process one at a time but could batch in future
+        # This maintains the interface consistency with providers that support batching
         embeddings = []
         for text in texts:
             embedding = await self.embed_text(text)
@@ -439,23 +442,46 @@ class EmbeddingService:
         batch_size: int = 100
     ) -> List[List[float]]:
         """
-        Generate embeddings for documents in batches.
+        Generate embeddings for documents in batches with rate limiting.
         
         Args:
             documents: List of documents to embed
-            batch_size: Batch size for processing
+            batch_size: Batch size for processing (default: 100)
             
         Returns:
             List[List[float]]: List of embedding vectors
         """
         all_embeddings = []
+        total_batches = (len(documents) + batch_size - 1) // batch_size
         
         for i in range(0, len(documents), batch_size):
             batch = documents[i:i + batch_size]
-            embeddings = await self.embed_texts(batch)
-            all_embeddings.extend(embeddings)
+            batch_num = i // batch_size + 1
             
-            logger.info(f"Embedded batch {i // batch_size + 1}/{(len(documents) + batch_size - 1) // batch_size}")
+            try:
+                embeddings = await self.embed_texts(batch)
+                all_embeddings.extend(embeddings)
+                
+                logger.info(
+                    f"Embedded batch {batch_num}/{total_batches} "
+                    f"({len(batch)} documents, {len(all_embeddings)} total)"
+                )
+                
+                # Rate limiting: small delay between batches to avoid overwhelming API
+                if batch_num < total_batches:
+                    await asyncio.sleep(0.1)
+                    
+            except Exception as e:
+                logger.error(f"Error embedding batch {batch_num}: {e}")
+                # On error, try individual embeddings for this batch
+                for doc in batch:
+                    try:
+                        embedding = await self.embed_text(doc)
+                        all_embeddings.append(embedding)
+                    except Exception as doc_error:
+                        logger.error(f"Failed to embed document: {doc_error}")
+                        # Use zero vector as fallback
+                        all_embeddings.append([0.0] * self.get_dimension())
         
         return all_embeddings
     
