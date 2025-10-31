@@ -46,6 +46,11 @@ try:  # Optional provider; requires LM Studio client
 except Exception:  # pragma: no cover - dependency optional
     LMStudioProvider = None  # type: ignore[assignment]
 
+try:  # Optional provider; requires httpx for GitHub Copilot API
+    from core.llm.providers.copilot import GitHubCopilotProvider
+except Exception:  # pragma: no cover - dependency optional
+    GitHubCopilotProvider = None  # type: ignore[assignment]
+
 __all__: List[str] = [
     "BaseLLMProvider",
     "LLMProvider",
@@ -67,3 +72,5 @@ if VLLMProvider is not None:
     __all__.append("VLLMProvider")
 if LMStudioProvider is not None:
     __all__.append("LMStudioProvider")
+if GitHubCopilotProvider is not None:
+    __all__.append("GitHubCopilotProvider")

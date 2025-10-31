@@ -52,6 +52,7 @@ setup(
     entry_points={
         "console_scripts": [
             "rca-engine=apps.api.main:main",
+            "rca-file-watcher=core.watchers.runner:run_cli",
         ],
     },
 )

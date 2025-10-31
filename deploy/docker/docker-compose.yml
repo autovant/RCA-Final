@@ -16,7 +16,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
     ports:
-      - "5432:5432"
+      - "15432:5432"
     networks:
       - rca_network
     healthcheck:
@@ -90,7 +90,7 @@ services:
   # RCA Engine Core Application
   rca_core:
     build:
-      context: ../
+      context: ../../
       dockerfile: deploy/docker/Dockerfile.secure
       args:
         USER_ID: 1000
@@ -99,8 +99,6 @@ services:
     restart: unless-stopped
     depends_on:
       db:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     environment:
       # Database
@@ -121,10 +119,12 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-rca-engine}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-rca-users}
       
-      # LLM
-      OLLAMA_HOST: http://ollama:11434
+      # LLM - Use host's Ollama or docker Ollama
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11435}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama2}
-      DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-ollama}
+      # Use GitHub Copilot proxy by default unless explicitly overridden
+      DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-copilot}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
       
       # Application
       ENVIRONMENT: ${ENVIRONMENT:-production}
@@ -148,11 +148,13 @@ services:
       - ../watch-folder:/app/watch-folder
     networks:
       - rca_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
-      - "8001:8001"  # Metrics
+      - "8001:8001"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health/live || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -168,7 +170,7 @@ services:
   # UI Application
   ui:
     build:
-      context: ../ui
+      context: ../../ui
       dockerfile: Dockerfile.secure
     container_name: rca_ui
     restart: unless-stopped
@@ -183,7 +185,7 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -315,7 +317,7 @@ services:
   # File watcher for automatic processing
   file_watcher:
     build:
-      context: ../
+      context: ../../
       dockerfile: deploy/docker/Dockerfile.watcher
     container_name: rca_file_watcher
     restart: unless-stopped
@@ -325,7 +327,10 @@ services:
       API_URL: http://rca_core:8000
       WATCH_FOLDER: /app/watch-folder
       POLL_INTERVAL: 10
+      DEBOUNCE_SECONDS: 5
+      MAX_FILE_SIZE_MB: 100
       FILE_PATTERNS: "*.log,*.txt,*.json"
+      API_AUTH_TOKEN: ${LOCAL_DEV_AUTH_TOKEN:-}
     volumes:
       - ../watch-folder:/app/watch-folder
       - ../uploads:/app/uploads
@@ -359,7 +364,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
+        - subnet: 172.28.0.0/16
 
 volumes:
   postgres_data:

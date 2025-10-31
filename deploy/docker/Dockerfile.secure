@@ -96,16 +96,18 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 EXPOSE 8000 8001
 
 # Default command (can be overridden)
+# Note: --max-requests 0 disables worker restart after N requests
+# This prevents frequent restarts from file system events on bind-mounted volumes
 CMD ["gunicorn", \
     "-k", "uvicorn.workers.UvicornWorker", \
     "--bind", "0.0.0.0:8000", \
-    "--workers", "2", \
-    "--threads", "2", \
+    "--workers", "1", \
+    "--threads", "4", \
     "--timeout", "180", \
+    "--graceful-timeout", "30", \
     "--keep-alive", "5", \
-    "--max-requests", "1000", \
-    "--max-requests-jitter", "50", \
-    "--preload", \
+    "--max-requests", "0", \
+    "--max-requests-jitter", "0", \
     "--access-logfile", "-", \
     "--error-logfile", "-", \
     "apps.api.main:app"]

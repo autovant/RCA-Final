@@ -20,6 +20,8 @@ class LLMProvider(str, Enum):
     ANTHROPIC = "anthropic"
     VLLM = "vllm"
     LMSTUDIO = "lmstudio"
+    COPILOT = "copilot"
+    GITHUB_COPILOT = "github-copilot"
 
 
 @dataclass

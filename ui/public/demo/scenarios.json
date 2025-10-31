@@ -1,0 +1,287 @@
+{
+  "updated": "2025-10-20T00:00:00Z",
+  "scenarios": [
+    {
+      "id": "pii-redaction",
+      "title": "Enterprise PII Redaction",
+      "tagline": "Automatically scrubs secrets before they leave the control plane.",
+      "summary": "Upload a log bundle with exposed credentials and watch the guardrails remove every secret before the LLM or downstream systems ever see it.",
+      "panels": {
+        "primary": {
+          "type": "code",
+          "label": "Raw Upload (Before)",
+          "language": "log",
+          "content": "GET https://auth.example.com/login\nAuthorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\naws_access_key_id=AKIAIOSFODNN7EXAMPLE\naws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\nssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7 demo@laptop\ndb_password=P@ssw0rd!\ncustomer_email=ceo@bigco.com\ncustomer_cc=4111-1111-1111-1111"
+        },
+        "secondary": {
+          "type": "code",
+          "label": "Redacted Output (After)",
+          "language": "log",
+          "content": "GET https://auth.example.com/login\nAuthorization: Bearer <REDACTED_TOKEN>\naws_access_key_id=<REDACTED_ACCESS_KEY>\naws_secret_access_key=<REDACTED_SECRET_KEY>\nssh-rsa <REDACTED_PUBLIC_KEY> demo@laptop\ndb_password=<REDACTED_SECRET>\ncustomer_email=<REDACTED_EMAIL>\ncustomer_cc=<REDACTED_PAN>"
+        }
+      },
+      "metrics": [
+        {
+          "label": "Secrets Removed",
+          "value": "31",
+          "tone": "success",
+          "annotation": "Tokens, keys, and customer records"
+        },
+        {
+          "label": "Validation Passes",
+          "value": "6",
+          "tone": "info",
+          "annotation": "Multi-pass scanning complete"
+        },
+        {
+          "label": "Redaction Mode",
+          "value": "Strict",
+          "tone": "neutral",
+          "annotation": "Fails closed on violations"
+        }
+      ],
+      "talkingPoints": [
+        "Secrets never touch the LLM thanks to pre-processing shields.",
+        "Operators get transparent audit trails with before vs after views.",
+        "Strict mode blocks downstream syncs if a leak is detected."
+      ],
+      "timeline": [
+        {
+          "label": "Upload received",
+          "value": "00:00"
+        },
+        {
+          "label": "PII scan 1",
+          "value": "00:03"
+        },
+        {
+          "label": "Secondary validation",
+          "value": "00:05"
+        },
+        {
+          "label": "Secure payload released",
+          "value": "00:07"
+        }
+      ],
+      "links": [
+        {
+          "label": "PII Protection Docs",
+          "href": "/features"
+        },
+        {
+          "label": "Try an Investigation",
+          "href": "/investigation"
+        }
+      ]
+    },
+    {
+      "id": "semantic-search",
+      "title": "Cross-Workspace Semantic Search",
+      "tagline": "Find similar incidents instantly with vector search across tenants.",
+      "summary": "Demonstrate how the similarity index surfaces the most relevant historical incidents, even when they originated in another customer workspace.",
+      "panels": {
+        "primary": {
+          "type": "list",
+          "label": "Ranked Matches",
+          "items": [
+            {
+              "title": "Incident 8421 - API handshake timeout",
+              "score": 0.94,
+              "summary": "Resolved Appian deployment stalled on OAuth microservice handshake.",
+              "timestamp": "Oct 18, 2025 15:31 UTC"
+            },
+            {
+              "title": "Incident 8267 - Secrets rotation drift",
+              "score": 0.88,
+              "summary": "Automation Anywhere bots failed after mid-span credential rotation.",
+              "timestamp": "Oct 12, 2025 08:12 UTC"
+            },
+            {
+              "title": "Incident 7994 - Blue Prism token expiry",
+              "score": 0.81,
+              "summary": "Stale API token blocked downstream queue processing for 27 minutes.",
+              "timestamp": "Sep 28, 2025 21:04 UTC"
+            }
+          ]
+        },
+        "secondary": {
+          "type": "insight",
+          "label": "Active Filters",
+          "content": "Query: \"oauth handshake retry budget exhausted\"\nPlatform filter: All\nConfidence threshold: 0.75\nWorkspaces: Global federation"
+        }
+      },
+      "metrics": [
+        {
+          "label": "Latency",
+          "value": "420 ms",
+          "tone": "success",
+          "annotation": "Vector lookup + metadata hydration"
+        },
+        {
+          "label": "Confidence",
+          "value": "0.94",
+          "tone": "info",
+          "annotation": "Top match relevance score"
+        }
+      ],
+      "talkingPoints": [
+        "Similarity spans every workspace the analyst can access.",
+        "Filters let you dial the signal-to-noise ratio live.",
+        "Each result links directly into the RCA narrative for fast knowledge transfer."
+      ],
+      "timeline": [
+        {
+          "label": "Fingerprint indexed",
+          "value": "T-2 min"
+        },
+        {
+          "label": "Analyst runs search",
+          "value": "T"
+        },
+        {
+          "label": "Matches returned",
+          "value": "T+0.42 s"
+        }
+      ],
+      "links": [
+        {
+          "label": "Open Related Incidents",
+          "href": "/related"
+        },
+        {
+          "label": "Explore Jobs",
+          "href": "/jobs"
+        }
+      ]
+    },
+    {
+      "id": "classification",
+      "title": "Outcome Classification & Exec Brief",
+      "tagline": "LLM-driven narratives with structured severity and actions.",
+      "summary": "Show how the RCA Engine turns raw evidence into a board-ready summary with clear classifications and next steps.",
+      "panels": {
+        "primary": {
+          "type": "insight",
+          "label": "Executive Summary",
+          "content": "Severity: High\nImpact: Customer onboarding stalled in three regions.\nPrimary cause: OAuth token rotation skipped in staging pipeline.\nMitigation: Rotated secrets, restarted worker pods, validated downstream SLAs."
+        },
+        "secondary": {
+          "type": "code",
+          "label": "Structured Output",
+          "language": "json",
+          "content": "{\n  \"summary\": \"OAuth handshake failures halted onboarding for 1,240 customers.\",\n  \"severity\": \"high\",\n  \"actions\": [\n    \"Rotate ServiceNow OAuth credentials\",\n    \"Purge stale runtime secrets\",\n    \"Trigger regression run for login microservice\"\n  ],\n  \"confidence\": 0.91,\n  \"owner\": \"Customer Identity Guild\"\n}"
+        }
+      },
+      "metrics": [
+        {
+          "label": "Draft Time",
+          "value": "18 s",
+          "tone": "success",
+          "annotation": "Multi-turn chain with guardrails"
+        },
+        {
+          "label": "Confidence",
+          "value": "0.91",
+          "tone": "info",
+          "annotation": "LLM consensus score"
+        }
+      ],
+      "talkingPoints": [
+        "Stakeholders receive structured outputs and human-friendly prose in one shot.",
+        "Confidence scores and actions give operators a launchpad for mitigation.",
+        "Outputs stay exportable as Markdown, HTML, or JSON."
+      ],
+      "timeline": [
+        {
+          "label": "Draft generated",
+          "value": "T+0.18 min"
+        },
+        {
+          "label": "Reviewer approves",
+          "value": "T+2.10 min"
+        }
+      ],
+      "links": [
+        {
+          "label": "View Tickets",
+          "href": "/tickets"
+        },
+        {
+          "label": "Launch Docs",
+          "href": "/docs"
+        }
+      ]
+    },
+    {
+      "id": "platform-detection",
+      "title": "Automatic Platform Detection",
+      "tagline": "Identifies automation stacks and extracts platform intelligence.",
+      "summary": "Illustrate how the ingestion pipeline recognizes the source platform and tailors downstream parsing automatically.",
+      "panels": {
+        "primary": {
+          "type": "list",
+          "label": "Detection Signals",
+          "items": [
+            {
+              "title": "Appian",
+              "score": 0.87,
+              "summary": "Matched process execution markers in 12 log lines.",
+              "timestamp": "Detected at ingestion"
+            },
+            {
+              "title": "Automation Anywhere",
+              "score": 0.33,
+              "summary": "Filename hint only; below rollout threshold.",
+              "timestamp": "Flagged for telemetry"
+            }
+          ]
+        },
+        "secondary": {
+          "type": "code",
+          "label": "Parser Payload",
+          "language": "json",
+          "content": "{\n  \"job_id\": \"demo-appian-772\",\n  \"platform\": \"appian\",\n  \"confidence\": 0.87,\n  \"entities\": {\n    \"processes\": [\"OnboardingWorkflow\"],\n    \"sessions\": [\"sess-44b5\"],\n    \"errors\": [\"OAuth handshake retry budget exhausted\"]\n  },\n  \"flagged_alt_platforms\": [\n    {\n      \"platform\": \"automation_anywhere\",\n      \"confidence\": 0.33\n    }\n  ]\n}"
+        }
+      },
+      "metrics": [
+        {
+          "label": "Confidence",
+          "value": "0.87",
+          "tone": "success",
+          "annotation": "Above rollout threshold"
+        },
+        {
+          "label": "Telemetry",
+          "value": "2 signals",
+          "tone": "info",
+          "annotation": "Secondary candidates logged"
+        }
+      ],
+      "talkingPoints": [
+        "Platform parsers light up automatically when confidence clears the rollout bar.",
+        "Secondary candidates stay visible for future tuning.",
+        "Detected entities feed straight into summaries and automations."
+      ],
+      "timeline": [
+        {
+          "label": "Detection complete",
+          "value": "T+0.9 s"
+        },
+        {
+          "label": "Entities extracted",
+          "value": "T+1.4 s"
+        }
+      ],
+      "links": [
+        {
+          "label": "Review Platform Signals",
+          "href": "/jobs"
+        },
+        {
+          "label": "Docs: Unified Ingestion",
+          "href": "/docs"
+        }
+      ]
+    }
+  ]
+}

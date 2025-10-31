@@ -1,192 +1,133 @@
 # RCA Insight Engine
 
-Unified, Python-first root-cause analysis (RCA) platform delivering multi-turn LLM reasoning, conversation traceability, configurable privacy controls, and ITSM-ready integrations.
+Unified, Python-first root-cause analysis platform with multi-provider LLM support, streaming progress updates, and ITSM integrations.
+
+## 🔒 Enterprise-Grade PII Protection
+
+**Your data security is our top priority.** The RCA Engine implements comprehensive, **multi-layered PII redaction** to ensure no sensitive information reaches LLMs or analysis outputs:
+
+- ✅ **30+ Pattern Types**: Automatically detects AWS/Azure keys, JWT tokens, passwords, emails, SSNs, credit cards, private keys, database credentials, and more
+- ✅ **Multi-Pass Scanning**: Runs up to 3 redaction passes to catch nested or revealed patterns
+- ✅ **Strict Validation**: Post-redaction validation detects potential leaks with security warnings
+- ✅ **Highly Visible**: Prominent UI indicators show real-time redaction stats and security status
+- ✅ **Audit Trail**: Complete logging of all redactions for compliance and security audits
+- ✅ **Enabled by Default**: Zero configuration needed—protection is active out of the box
+
+**See [PII Protection Guide](docs/PII_PROTECTION_GUIDE.md) for complete security documentation.**
 
 ---
 
-## Features
+## Quick Links
 
-- **Conversational RCA Pipeline** – FastAPI API + async worker orchestrate chunking, embeddings (pgvector), retrieval, and multi-turn LLM analysis with persistent conversation history.
-- **Multi-provider LLM support** – Plug-in adapters for Ollama/local, OpenAI, and AWS Bedrock with per-job model overrides.
-- **PII/Sensitive Data Redaction** – Configurable regex-based sanitizer runs before summarisation/embeddings, capturing redaction hit counts for downstream audit.
-- **Structured Outputs** – Every job emits Markdown, HTML, and JSON bundles including severity, recommended actions, and ticket metadata.
-- **ITSM Ticketing** – Modular ticket service stores previews or created tickets (Jira/ServiceNow), with dry-run mode and profile-based credentials.
-- **File Watcher & SSE Streams** – Central watcher configuration, event bus, and `/api/watcher/events` SSE endpoint for live ingestion dashboards.
-- **Traceability & Metrics** – Job events, conversation turns, Prometheus metrics, and structured logging for full observability.
-- **React/Next.js Demo UI** – Upload artefacts, configure watchers, monitor SSE streams, and review RCA outputs from a companion UI (see `ui/`).
+### 📚 Getting Started
+- [Quickstart Checklist](docs/getting-started/quickstart.md) – Get running in 5 minutes
+- [Developer Environment Setup](docs/getting-started/dev-setup.md) – Detailed setup guide
+- [Startup Scripts Guide](scripts/README.md) – All PowerShell/Bash scripts documented
 
----
+### � Security & Features
+- [�🔒 **PII Protection & Security Guide**](docs/PII_PROTECTION_GUIDE.md) ⭐ – Multi-layer redaction
+- [Platform Features](docs/reference/features.md) – Complete feature catalog
 
-## Architecture Overview
+### 🏗️ Architecture & Diagrams
+- [System Architecture](docs/diagrams/architecture.md) – C4 component diagram
+- [Data Flow Sequences](docs/diagrams/data-flow.md) – Upload, analysis, SSE streaming
+- [Deployment Topology](docs/diagrams/deployment.md) – WSL 2 + Docker infrastructure
+- [PII Redaction Pipeline](docs/diagrams/pii-pipeline.md) – Multi-pass security flowchart
+- [ITSM Integration Flows](docs/diagrams/itsm-integration.md) – ServiceNow & Jira workflows
 
-```
-┌───────────────┐    ┌───────────────┐    ┌──────────────┐
-│ File Uploads  │    │ Watcher Events│    │ API Clients  │
-└──────┬────────┘    └──────┬────────┘    └──────┬───────┘
-       │                     │                   │
-       ▼                     ▼                   ▼
-┌────────────────────────────────────────────────────────┐
-│                  FastAPI Application                    │
-│  - Auth / Files / Jobs / Summary / Tickets / Watcher    │
-│  - SSE streams for job + watcher events                 │
-└────────┬───────────────────────────────┬───────────────┘
-         │                               │
-         │ enqueue jobs                  │ metrics/logging
-         ▼                               ▼
-┌───────────────────────┐        ┌────────────────────┐
-│ Async Worker (Celery) │        │ Observability Stack │
-│ - Chunk + embed files │        │ - Prometheus        │
-│ - PII redaction       │        │ - Structured logs   │
-│ - LLM orchestration   │        └────────────────────┘
-│ - Ticket callbacks    │
-└─────────┬─────────────┘
-          │      ┌────────────────────┐
-          │      │ LLM Providers      │
-          │      │ (Ollama/OpenAI/etc)│
-          │      └────────────────────┘
-          ▼
-┌──────────────────────────────────────────────┐
-│ PostgreSQL (pgvector) + Optional Redis       │
-│  - jobs / files / documents / conversation   │
-│  - watcher config & events                   │
-│  - ticket metadata                           │
-└──────────────────────────────────────────────┘
-```
+### 🚀 Operations & Deployment
+- [Deployment Guide](docs/deployment/deployment-guide.md) – Production deployment
+- [Troubleshooting Playbook](docs/operations/troubleshooting.md) – Common issues & fixes
+
+### 📖 Reference
+- [Full Documentation Index](docs/index.md) – Complete docs catalog
+- [Historical Archive](docs/archive/HISTORICAL_NOTES.md) – Legacy fixes & completion reports
 
 ---
 
-## Getting Started
+## Highlights
 
-### 1. Clone & configure
+- **🔒 PII Protection** – Multi-pass redaction with strict validation protects 30+ sensitive data types before any LLM or storage operations ([architecture diagram](docs/diagrams/pii-pipeline.md)).
+- **Investigation pipeline** – FastAPI API + async worker coordinate redaction, embeddings (pgvector), retrieval, and LLM reasoning while emitting friendly `analysis-progress` events ([data flow diagrams](docs/diagrams/data-flow.md)).
+- **Flexible LLM providers** – Toggle between GitHub Copilot, OpenAI, Bedrock, Anthropic, LM Studio, or vLLM with per-job overrides.
+- **ITSM ready** – Ticket adapters for ServiceNow and Jira, structured outputs (Markdown/HTML/JSON), and optional dry-run previews ([integration workflows](docs/diagrams/itsm-integration.md)).
+- **Observability** – Prometheus metrics, structured logs, and optional Grafana dashboards.
+- **Next.js UI** – Upload artefacts, monitor live progress with real-time redaction stats, and review investigation transcripts.
 
-```bash
-git clone https://github.com/<org>/unified_rca_engine.git
-cd unified_rca_engine
-cp .env.example .env
-# update secrets, database host, LLM keys, and privacy settings as needed
-```
+See the [Architecture Overview](docs/diagrams/architecture.md) for a complete system diagram and the [Deployment Topology](docs/diagrams/deployment.md) for infrastructure setup.
 
-### 2. Run services locally (Docker Compose)
+---
 
-```bash
-docker compose -f deploy/docker/docker-compose.yml up --build
-```
+## Local Development
 
-Services exposed by default:
+> **⚠️ IMPORTANT - Docker via WSL Required**  
+> This project uses **Docker Engine inside WSL 2**, NOT Docker Desktop on Windows.  
+> Docker Desktop is typically blocked in enterprise environments. All startup scripts  
+> (`quick-start-dev.ps1`, `start-dev.ps1`, etc.) invoke `wsl.exe` to run `docker compose`  
+> inside your WSL distribution. Ensure Docker is installed and running in WSL before starting.
 
-| Service          | Port | Notes                                   |
-|------------------|------|-----------------------------------------|
-| API (Gunicorn)   | 8000 | FastAPI endpoints `/api/...`            |
-| Metrics          | 8001 | Prometheus scrape endpoint              |
-| UI (Next.js)     | 3000 | Demo dashboard                          |
-| Postgres         | 5432 | pgvector-enabled database               |
-| Redis (optional) | 6379 | Event bus / rate limiting               |
+The fastest path is the consolidated quickstart:
 
-### 3. Launch worker & UI for local dev
-
-```bash
-python -m apps.worker.main          # background processing
-cd ui && npm install && npm run dev # Next.js dashboard
+```powershell
+.\quick-start-dev.ps1
 ```
 
-### 4. Verify health
+This launches the database containers (via WSL Docker), backend API (with reload), Next.js UI, optional worker, and Copilot proxy in dedicated terminals. Flags such as `-IncludeWorker`, `-NoWorker`, and `-NoBrowser` control behaviour.
 
-```bash
-curl http://localhost:8000/api/health/liveness
-curl http://localhost:8000/api/health/readiness
-curl http://localhost:8000/api/status
+Prefer more control? Follow the steps outlined in the [Developer Environment Setup](docs/getting-started/dev-setup.md) guide to run services manually via `start-dev.ps1`, Uvicorn, and `npm run dev`.
+
+---
+
+## Testing & Quality
+
+```powershell
+.\venv\Scripts\activate
+python -m pytest
+
+# Run Playwright UI smoke tests
+cd tests\playwright
+npm install   # first run only
+npm test
 ```
 
----
-
-## Key API Endpoints
-
-| Route                               | Description                                             |
-|-------------------------------------|---------------------------------------------------------|
-| `POST /api/jobs/`                   | Create RCA job (supports per-job provider & ticketing)  |
-| `GET /api/jobs/{id}`                | Job status snapshot                                     |
-| `GET /api/jobs/{id}/events`         | Historical events                                       |
-| `GET /api/jobs/{id}/stream`         | SSE stream (alias for `/api/sse/jobs/{id}`)             |
-| `GET /api/summary/{id}`             | Markdown / HTML / JSON RCA outputs                      |
-| `GET /api/conversation/{id}`        | Full conversation history                               |
-| `GET /api/files/jobs/{job_id}`      | Uploaded artefacts for a job                            |
-| `GET /api/tickets/{job_id}`         | Tickets linked to a job                                 |
-| `POST /api/tickets`                 | Record ticket preview or creation                       |
-| `GET /api/watcher/config`           | Current watcher settings                                |
-| `PUT /api/watcher/config`           | Update watcher settings                                 |
-| `GET /api/watcher/events`           | Watcher SSE stream                                      |
-| `GET /api/watcher/status`           | Aggregated watcher metrics                              |
-| `GET /metrics`                      | Prometheus-compatible metrics                           |
-
-Swagger (`/api/docs`) available when `DEBUG=true`.
+Add linters or type-checkers (e.g. `ruff`, `mypy`) via your preferred workflow.
 
 ---
 
-## Configuration Highlights
-
-| Setting                         | Default        | Description                                             |
-|---------------------------------|----------------|---------------------------------------------------------|
-| `PII_REDACTION_ENABLED`         | `true`         | Enable automatic PII masking                            |
-| `PII_REDACTION_REPLACEMENT`     | `[REDACTED]`   | Replacement token                                       |
-| `PII_REDACTION_PATTERNS`        | JSON/List      | `label::regex` entries controlling redaction rules      |
-| `DEFAULT_PROVIDER`              | `ollama`       | Fallback LLM provider                                   |
-| `MAX_FILE_SIZE_MB`              | `100`          | Upload guardrail                                        |
-| `WATCH_FOLDER`                  | `watch-folder` | Default watcher root (may be overridden via API)        |
-| `METRICS_ENABLED`               | `true`         | Toggle Prometheus exporter                              |
-| `CORS_ALLOW_ORIGINS`            | `["*"]`        | Adjust for production                                   |
-
-Additional settings are documented inline in `core/config.py` and mirrored in `.env.example`.
-
----
-
-## Development & Testing
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate
-pip install -r requirements.txt
-
-python -m pytest           # unit tests
-scripts/setup.sh           # optional helper for local environment bootstrap
-```
-
-Linting hooks / type checks can be integrated per your CI strategy (e.g. `ruff`, `mypy`, `bandit`, `pip-audit`).
-
----
-
-## Project Structure Highlights
+## Repository Map
 
 ```
-core/
-  config.py        # Settings + typed views (security, privacy, etc.)
-  db/              # SQLAlchemy models & async DB manager
-  jobs/            # Job service + processor + event bus integration
-  llm/             # Provider factory & embedding service
-  privacy/         # PII redaction utilities
-  security/        # Auth + middleware
-apps/
-  api/             # FastAPI app, routers, middleware
-  worker/          # Async worker entrypoint
-ui/                # Next.js demo frontend
-deploy/            # Dockerfiles, compose stack, scripts
-tests/             # Pytest suite
+apps/          FastAPI application and worker entry points
+core/          Domain logic (config, jobs, LLM, privacy, tickets, prompts)
+deploy/        Dockerfiles, compose stacks, monitoring profiles
+docs/          📚 Consolidated documentation hub
+  ├── diagrams/      Mermaid architecture & flow diagrams
+  ├── getting-started/  Setup and quickstart guides
+  ├── operations/    Troubleshooting and operational playbooks
+  ├── deployment/    Production deployment guides
+  ├── reference/     API docs, features, architecture
+  └── archive/       Historical fixes and completion reports
+scripts/       🔧 PowerShell/Bash automation and validation utilities
+tools/         Manual testing utilities and sample payloads
+ui/            Next.js 14 frontend (TypeScript, Tailwind, Zustand)
+tests/         Pytest + Playwright test suites
+  ├── integration/   Integration tests
+  ├── unit/          Unit tests
+  └── debug/         Temporary debugging scripts (not in CI)
 ```
 
----
-
-## Upgrading / Extending
-
-- **Adding PII Rules**: extend `PII_REDACTION_PATTERNS` in env or via deployment secrets. Patterns accept `label::regex`.
-- **Custom LLM Provider**: implement `BaseLLMProvider` subclass under `core/llm/providers/` and register via `LLMProviderFactory.register_provider`.
-- **Ticket Platforms**: extend `core/tickets/service.py` to integrate additional systems and expose new API routes or background tasks.
-- **Watcher Backends**: the watcher service currently persists configuration/events; plug your own filesystem or object storage listener emitting into `core.watchers.watcher_event_bus`.
+**Key Files**:
+- `quick-start-dev.ps1` – One-command full stack startup
+- `scripts/README.md` – Complete script documentation
+- `docs/index.md` – Full documentation catalog
+- `docs/diagrams/README.md` – Visual documentation hub
 
 ---
 
-## License & Contributing
+## Contributing
 
-Contributions welcome! Please open issues/PRs with tests and documentation updates. Ensure sensitive configuration values are stored securely (secrets manager or CI variables) before deploying to production.
+1. Create a feature branch.
+2. Run tests and update documentation when behaviour changes.
+3. Open a pull request targeting `master`.
 
----
-
-© 2025 RCA Insight Engine Team. All rights reserved.
+Please avoid checking in secrets—use `.env` locally and CI/CD vaults in production.

@@ -209,7 +209,9 @@ class LLMProviderManager:
         **kwargs
     ) -> LLMResponse:
         """
-        Generate a response with automatic fallback.
+        Generate a response with automatic fallback and retry logic.
+        
+        Will try each provider in sequence (primary + fallbacks) up to max_retries times.
         
         Args:
             messages: Conversation messages
@@ -221,13 +223,24 @@ class LLMProviderManager:
             LLMResponse with generated content
             
         Raises:
-            RuntimeError: If all providers fail
+            RuntimeError: If all providers fail after all retries
         """
         last_error = None
+        providers_tried = []
         
         for attempt in range(self.max_retries):
             try:
                 provider = await self.get_provider(force_refresh=(attempt > 0))
+                provider_name = provider.provider_name
+                
+                # Track which providers we've tried
+                if provider_name not in providers_tried:
+                    providers_tried.append(provider_name)
+                
+                logger.info(
+                    f"Attempting generation with {provider_name} "
+                    f"(attempt {attempt + 1}/{self.max_retries})"
+                )
                 
                 response = await provider.generate(
                     messages=messages,
@@ -236,21 +249,32 @@ class LLMProviderManager:
                     **kwargs
                 )
                 
+                logger.info(f"Successfully generated response using {provider_name}")
                 return response
                 
             except Exception as e:
                 logger.warning(
-                    f"Generation failed (attempt {attempt + 1}/{self.max_retries}): {e}"
+                    f"Generation failed with {provider_name if self._active_provider else 'provider'} "
+                    f"(attempt {attempt + 1}/{self.max_retries}): {e}"
                 )
                 last_error = e
                 
                 # Mark current provider as unhealthy
                 if self._active_provider:
                     self._provider_health[self._active_provider.provider_name] = False
-                    await self._active_provider.close()
+                    try:
+                        await self._active_provider.close()
+                    except:
+                        pass  # Ignore close errors
                     self._active_provider = None
         
-        raise RuntimeError(f"All providers failed after {self.max_retries} retries: {last_error}")
+        error_msg = (
+            f"All providers failed after {self.max_retries} retries. "
+            f"Tried: {', '.join(providers_tried)}. "
+            f"Last error: {last_error}"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
     
     async def stream_generate(
         self,

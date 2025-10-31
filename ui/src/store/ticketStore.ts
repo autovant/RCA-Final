@@ -1,5 +1,10 @@
 import { create } from 'zustand';
-import { Ticket, TicketToggleState } from '@/types/tickets';
+import {
+  Ticket,
+  TicketToggleState,
+  TemplateMetadata,
+  TicketPlatform,
+} from '@/types/tickets';
 import ticketApi from '@/lib/api/tickets';
 import toast from 'react-hot-toast';
 
@@ -13,6 +18,11 @@ interface TicketStore {
   searchQuery: string;
   filterPlatform: 'all' | 'servicenow' | 'jira';
   filterStatus: 'all' | string;
+  
+  // Template state
+  templates: TemplateMetadata[];
+  selectedTemplate: TemplateMetadata | null;
+  templatesLoading: boolean;
 
   // Actions
   loadJobTickets: (jobId: string, refresh?: boolean) => Promise<void>;
@@ -24,7 +34,63 @@ interface TicketStore {
   setFilterStatus: (status: 'all' | string) => void;
   refreshTickets: (jobId: string) => Promise<void>;
   reset: () => void;
+  
+  // Template actions
+  fetchTemplates: (platform?: TicketPlatform) => Promise<void>;
+  selectTemplate: (template: TemplateMetadata | null) => void;
+  clearTemplate: () => void;
 }
+
+const FALLBACK_TICKETS: Ticket[] = [
+  {
+    id: 'preview-servicenow',
+    job_id: 'demo-job',
+    platform: 'servicenow',
+    ticket_id: 'INC0012874',
+    url: 'https://example.service-now.com/nav_to.do?uri=incident.do?sys_id=demo',
+    status: 'In Progress',
+    profile_name: 'sev-two-default',
+    dry_run: true,
+    payload: {
+      short_description: 'Customer outage | RCA automation draft',
+      priority: '2',
+      assignment_group: 'SRE / Automation',
+    },
+    metadata: {
+      placeholder: true,
+      synopsis: 'Demonstrates ServiceNow dual-mode synchronization while APIs are offline.',
+      refreshed_at: new Date().toISOString(),
+    },
+    created_at: new Date().toISOString(),
+    updated_at: null,
+  },
+  {
+    id: 'preview-jira',
+    job_id: 'demo-job',
+    platform: 'jira',
+    ticket_id: 'OPS-4821',
+    url: 'https://example.atlassian.net/browse/OPS-4821',
+  status: 'New',
+    profile_name: 'go-to-market-brief',
+    dry_run: true,
+    payload: {
+      summary: 'Executive briefing | Automation-led RCA packet',
+      priority: 'High',
+    },
+    metadata: {
+      placeholder: true,
+      synopsis: 'Preview issue for Jira when live telemetry is disconnected.',
+    },
+    created_at: new Date().toISOString(),
+    updated_at: null,
+  },
+];
+
+const FALLBACK_TOGGLE_STATE: TicketToggleState = {
+  servicenow_enabled: true,
+  jira_enabled: true,
+  dual_mode: true,
+};
 
 const initialState = {
   tickets: [],
@@ -35,6 +101,24 @@ const initialState = {
   searchQuery: '',
   filterPlatform: 'all' as const,
   filterStatus: 'all' as const,
+  templates: [],
+  selectedTemplate: null,
+  templatesLoading: false,
+};
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const maybeDetail = (error as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+    if (typeof maybeDetail === 'string') {
+      return maybeDetail;
+    }
+  }
+
+  return 'Unexpected error occurred';
 };
 
 export const useTicketStore = create<TicketStore>((set, get) => ({
@@ -48,11 +132,12 @@ export const useTicketStore = create<TicketStore>((set, get) => ({
         tickets: response.tickets, 
         loading: false 
       });
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.detail || error.message || 'Failed to load tickets';
+    } catch (error) {
+      const errorMessage = `${getErrorMessage(error)}. Showing sample tickets until services recover.`;
       set({ 
         error: errorMessage, 
-        loading: false 
+        loading: false,
+        tickets: FALLBACK_TICKETS,
       });
       toast.error(errorMessage);
     }
@@ -62,9 +147,10 @@ export const useTicketStore = create<TicketStore>((set, get) => ({
     try {
       const state = await ticketApi.getToggleState();
       set({ toggleState: state });
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.detail || error.message || 'Failed to load toggle state';
+    } catch (error) {
+      const errorMessage = `${getErrorMessage(error)}. Using preview integration settings.`;
       console.error('Failed to load toggle state:', error);
+      set({ toggleState: FALLBACK_TOGGLE_STATE });
       toast.error(errorMessage);
     }
   },
@@ -78,8 +164,8 @@ export const useTicketStore = create<TicketStore>((set, get) => ({
         loading: false 
       });
       toast.success('ITSM settings updated successfully');
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.detail || error.message || 'Failed to update toggle state';
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
       set({ 
         error: errorMessage, 
         loading: false 
@@ -102,6 +188,31 @@ export const useTicketStore = create<TicketStore>((set, get) => ({
   },
 
   reset: () => set(initialState),
+  
+  // Template actions
+  fetchTemplates: async (platform?: TicketPlatform) => {
+    set({ templatesLoading: true });
+    try {
+      const response = await ticketApi.getTemplates(platform);
+      set({ 
+        templates: response.templates,
+        templatesLoading: false 
+      });
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      console.error('Failed to load templates:', error);
+      set({ templatesLoading: false });
+      toast.error(errorMessage);
+    }
+  },
+
+  selectTemplate: (template: TemplateMetadata | null) => {
+    set({ selectedTemplate: template });
+  },
+
+  clearTemplate: () => {
+    set({ selectedTemplate: null });
+  },
 }));
 
 // Selector hooks for filtered tickets

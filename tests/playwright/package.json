@@ -1,0 +1,19 @@
+{
+  "name": "rca-playwright-tests",
+  "version": "1.0.0",
+  "description": "End-to-end smoke tests for the RCA Insight Engine UI",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "install-deps": "playwright install"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
+  }
+}

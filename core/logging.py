@@ -7,17 +7,17 @@ import logging
 import sys
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, cast
 from pythonjsonlogger import jsonlogger
 from core.config import settings
 
 
 class CustomJsonFormatter(jsonlogger.JsonFormatter):
-    """Custom JSON formatter for structured logging."""
+    """Custom JSON formatter for structured logging with enhanced context."""
     
     def add_fields(self, log_record: Dict[str, Any], record: logging.LogRecord, message_dict: Dict[str, Any]):
         """
-        Add custom fields to log record.
+        Add custom fields to log record with enhanced metadata.
         
         Args:
             log_record: Log record dictionary
@@ -26,29 +26,58 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         """
         super().add_fields(log_record, record, message_dict)
         
-        # Add timestamp
+        # Add timestamp in ISO format
         log_record['timestamp'] = datetime.now(timezone.utc).isoformat()
-        
-
+        log_record['level'] = record.levelname
         log_record['logger'] = record.name
         
-        # Add module and function info
-        log_record['module'] = record.module
-        log_record['function'] = record.funcName
-        log_record['line'] = record.lineno
+        # Add source code location
+        log_record['source'] = {
+            'module': record.module,
+            'function': record.funcName,
+            'line': record.lineno,
+            'path': record.pathname
+        }
         
-        # Add application info
-        log_record['app'] = settings.APP_NAME
-        log_record['version'] = settings.APP_VERSION
-        log_record['environment'] = settings.ENVIRONMENT
+        # Add application metadata
+        log_record['app'] = {
+            'name': settings.APP_NAME,
+            'version': settings.APP_VERSION,
+            'environment': settings.ENVIRONMENT
+        }
         
-        # Add process and thread info
-        log_record['process_id'] = record.process
-        log_record['thread_id'] = record.thread
+        # Add process info for debugging
+        log_record['process'] = {
+            'id': record.process,
+            'name': record.processName if hasattr(record, 'processName') else None
+        }
+        
+        log_record['thread'] = {
+            'id': record.thread,
+            'name': record.threadName
+        }
         
         # Add exception info if present
         if record.exc_info:
-            log_record['exception'] = self.formatException(record.exc_info)
+            log_record['exception'] = {
+                'type': record.exc_info[0].__name__ if record.exc_info[0] else None,
+                'message': str(record.exc_info[1]) if record.exc_info[1] else None,
+                'traceback': self.formatException(record.exc_info)
+            }
+        
+        # Extract structured data from extra fields
+        # Common patterns: job_id, user_id, duration_ms, etc.
+        structured_fields = {}
+        for key, value in vars(record).items():
+            if key not in ['name', 'msg', 'args', 'created', 'filename', 'funcName',
+                          'levelname', 'lineno', 'module', 'msecs', 'message',
+                          'pathname', 'process', 'processName', 'relativeCreated',
+                          'thread', 'threadName', 'exc_info', 'exc_text', 'stack_info']:
+                # Add to structured fields if not a standard field
+                structured_fields[key] = value
+        
+        if structured_fields:
+            log_record['context'] = structured_fields
 
 
 class ContextFilter(logging.Filter):
@@ -162,10 +191,12 @@ class LoggerAdapter(logging.LoggerAdapter):
             tuple: Processed message and kwargs
         """
         # Add extra context to kwargs
-        if 'extra' not in kwargs:
+        if 'extra' not in kwargs or kwargs['extra'] is None:
             kwargs['extra'] = {}
-        
-        kwargs['extra'].update(self.extra)
+
+        extra_context = cast(Dict[str, Any], kwargs['extra'])
+        if self.extra:
+            extra_context.update(self.extra)
         
         return msg, kwargs
 
@@ -269,6 +300,62 @@ def log_error(
     )
 
 
+def log_platform_detection_event(
+    job_id: str,
+    *,
+    detected_platform: str,
+    confidence: float,
+    parser_executed: bool,
+    detection_method: str,
+    feature_flags: Optional[Dict[str, bool]] = None,
+    duration_ms: Optional[float] = None,
+) -> None:
+    """Emit structured log for platform detection outcomes."""
+
+    logger = logging.getLogger("platform_detection")
+    logger.info(
+        "platform detection evaluated",
+        extra={
+            "job_id": job_id,
+            "detected_platform": detected_platform,
+            "confidence": round(confidence, 4),
+            "parser_executed": parser_executed,
+            "detection_method": detection_method,
+            "feature_flags": feature_flags or {},
+            "duration_ms": duration_ms,
+        },
+    )
+
+
+def log_archive_guardrail_event(
+    job_id: str,
+    *,
+    source_filename: str,
+    archive_type: str,
+    status: str,
+    decompression_ratio: Optional[float] = None,
+    member_count: Optional[int] = None,
+    blocked_reason: Optional[str] = None,
+    partial_members: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """Emit structured log entry describing archive guardrail evaluation."""
+
+    logger = logging.getLogger("archive_guardrail")
+    logger.info(
+        "archive guardrail evaluated",
+        extra={
+            "job_id": job_id,
+            "source": source_filename,
+            "archive_type": archive_type,
+            "status": status,
+            "decompression_ratio": decompression_ratio,
+            "member_count": member_count,
+            "blocked_reason": blocked_reason,
+            "partial_members": partial_members or [],
+        },
+    )
+
+
 # Export commonly used items
 __all__ = [
     'setup_logging',
@@ -280,4 +367,6 @@ __all__ = [
     'log_api_request',
     'log_job_event',
     'log_error',
+    'log_platform_detection_event',
+    'log_archive_guardrail_event',
 ]

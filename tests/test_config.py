@@ -21,12 +21,13 @@ def test_security_settings():
 def test_database_settings():
     """Test database settings."""
     assert settings.database.POSTGRES_HOST is not None
-    assert settings.database.POSTGRES_PORT == 5432
+    assert settings.database.POSTGRES_PORT == settings.POSTGRES_PORT
+    assert settings.database.POSTGRES_PORT > 0
     assert settings.database.DATABASE_URL is not None
 
 
 def test_llm_settings():
     """Test LLM settings."""
-    assert settings.llm.DEFAULT_PROVIDER in ["ollama", "openai", "bedrock"]
+    assert settings.llm.DEFAULT_PROVIDER in ["copilot", "ollama", "openai", "bedrock"]
     assert settings.llm.OLLAMA_BASE_URL is not None
     assert settings.llm.EMBEDDING_PROVIDER in ["ollama", "openai"]
